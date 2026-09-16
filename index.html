@@ -1,2 +1,224 @@
-<p>Hello</p>
-<h1> Hello World</h1>
+<template>
+    <lightning-card title="Direct Upload to SharePoint">
+        <div class="slds-p-around_medium">
+            
+            <!-- File Input -->
+            <input type="file" onchange={handleFile} accept="*/*" />
+
+            <!-- Upload Button -->
+            <lightning-button 
+                label="Upload" 
+                variant="brand" 
+                class="slds-m-top_medium" 
+                onclick={upload}>
+            </lightning-button>
+
+            <!-- Progress Bar -->
+            <template if:true={uploading}>
+                <p class="slds-m-top_small">Progress: {progress}%</p>
+                <lightning-progress-bar value={progress} size="large"></lightning-progress-bar>
+            </template>
+
+        </div>
+    </lightning-card>
+
+     <lightning-card title="SharePoint File Preview">
+        <div class="slds-p-around_medium">
+            <lightning-button
+                label="Preview File"
+                variant="brand"
+                onclick={handlePreview}>
+            </lightning-button>
+        </div>
+
+        <template if:true={previewUrl}>
+            <iframe
+                src={previewUrl}
+                width="100%"
+                height="600"
+                frameborder="0">
+            </iframe>
+        </template>
+    </lightning-card>
+</template>
+
+---------------------------------------------JS------------------------------------------------------
+
+import { LightningElement, track } from 'lwc';
+import createUploadSession from '@salesforce/apex/DirectSharePointUploadController.createUploadSession';
+import getPreviewUrl from     '@salesforce/apex/DirectSharePointUploadController.getPreviewUrl';
+
+export default class DirectSharePointUpload extends LightningElement {
+
+    file;
+    @track progress = 0;
+    @track uploading = false;
+     previewUrl;
+    itemId;
+    CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk
+
+    handleFile(event) {
+        this.file = event.target.files[0];
+    }
+
+    async upload() {
+        if (!this.file) {
+            alert('Select a file first');
+            return;
+        }
+
+        this.uploading = true;
+        this.progress = 0;
+
+        // Optional: make filename unique to avoid conflicts
+        const timestamp = Date.now();
+        const parts = this.file.name.split('.');
+        const fileNameUnique = `${parts[0]}_${timestamp}.${parts[1]}`;
+
+        // Step 1: Create upload session
+        const session = await createUploadSession({ fileName: fileNameUnique });
+        const uploadUrl = session.uploadUrl;
+
+        // Step 2: Convert file to ArrayBuffer
+        const buffer = await this.file.arrayBuffer();
+        const total = buffer.byteLength;
+        let start = 0;
+        let uploadedFileMeta;
+        // Step 3: Upload in chunks directly to Graph
+        while (start < total) {
+            const end = Math.min(start + this.CHUNK_SIZE, total);
+            const chunk = buffer.slice(start, end);
+            const isFinalChunk = end === total
+           const response=  await fetch(uploadUrl, {
+                method: 'PUT',
+                headers: {
+                    'Content-Length': chunk.byteLength,
+                    'Content-Range': `bytes ${start}-${end - 1}/${total}`
+                },
+                body: chunk
+            });
+            if (isFinalChunk && (response.status === 200 || response.status === 201)) {
+            uploadedFileMeta = await response.json();
+
+            console.log('Final Upload Response:', uploadedFileMeta);
+            console.log(uploadedFileMeta.name);
+            console.log(uploadedFileMeta.id);
+            console.log(uploadedFileMeta.webUrl);
+            console.log(uploadedFileMeta.createdDateTime);
+            console.log(uploadedFileMeta.createdDateTime);
+            this.itemId = uploadedFileMeta.id;
+            }
+
+            start = end;
+            this.progress = Math.floor((start / total) * 100);
+            alert(JSON.stringify(response));
+        }
+
+        this.progress = 100;
+        this.uploading = false;
+        alert('File uploaded successfully 🚀');
+    }
+    async handlePreview() {
+        alert(this.itemId);
+        try {
+            this.previewUrl = await getPreviewUrl({                
+                itemId: this.itemId
+            });
+        } catch (error) {
+            console.error(error);
+            alert('Unable to preview file');
+        }
+    }
+}
+
+-------------Apex class----------------
+
+
+public with sharing class DirectSharePointUploadController {
+
+    // Get access token using client credentials
+    private static String getAccessToken() {
+        String tenantId = 'b4684825-ce76-4230-b6bf-78d7feacdd47'; //Replace with your tenant Id
+        String clientId = '2262f89b-1ae8-484d-84c1-058cdfbe9797'; //Replace with your client Id
+        String clientSecret = '6rI8Q~teuw5SXVa..v9WXubUvMpDSlZAdf89gcE4';//Replace with your secret Id
+        
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint('https://login.microsoftonline.com/' + tenantId + '/oauth2/v2.0/token');
+        req.setMethod('POST');
+        req.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+        req.setBody('grant_type=client_credentials'
+                    + '&client_id=' + EncodingUtil.urlEncode(clientId, 'UTF-8')
+                    + '&client_secret=' + EncodingUtil.urlEncode(clientSecret, 'UTF-8')
+                    + '&scope=' + EncodingUtil.urlEncode('https://graph.microsoft.com/.default', 'UTF-8'));
+
+        HttpResponse res = new Http().send(req);
+         System.debug('res*******'+res);
+        System.debug('res*******'+res.getBody());
+
+        if (res.getStatusCode() >= 200 && res.getStatusCode() < 300) {
+            Map<String, Object> token = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+            return (String) token.get('access_token');
+        }
+        throw new AuraHandledException('Failed to get access token: ' + res.getBody());
+    }
+
+    @AuraEnabled
+    public static Map<String, String> createUploadSession(String fileName) {
+        String siteId = '4cee1d3d-d6a9-48dc-b78f-be9934633d01,986143d4-573d-4733-9d60-5651bf258dfd'; //Replace with your site Id
+        String driveId = 'b!PR3uTKnW3Ei3j76ZNGM9AdRDYZg9VzNHnWBWUb8lhm8-1R-Ntjk0S5tByGYw7Hdfdf'; //Replace with your Drive Id
+
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint('https://graph.microsoft.com/v1.0/sites/' + siteId + '/drives/' + driveId + '/root:/' + EncodingUtil.urlEncode(fileName,'UTF-8') + ':/createUploadSession');
+        req.setMethod('POST');
+        req.setHeader('Authorization', 'Bearer ' + getAccessToken());
+        req.setHeader('Content-Type', 'application/json');
+        req.setBody('{"item":{"@microsoft.graph.conflictBehavior":"replace"}}');
+
+        HttpResponse res = new Http().send(req);
+         System.debug('res*******'+res);
+        System.debug('res*******'+res.getBody());
+
+        if (res.getStatusCode() >= 200 && res.getStatusCode() < 300) {
+            Map<String,Object> result = (Map<String,Object>) JSON.deserializeUntyped(res.getBody());
+            return new Map<String,String>{ 'uploadUrl' => (String) result.get('uploadUrl') };
+        }
+
+        throw new AuraHandledException('Failed to create upload session: ' + res.getBody());
+    }
+    @AuraEnabled(cacheable=true)
+    public static String getPreviewUrl( String itemId) {
+        String siteId = '4cee1d3d-d6a9-48dc-b78f-be9934633d01,986143d4-573d-4733-9d60-5651bf25866f';//Replace with your site Id
+        String driveId = 'b!PR3uTKnW3Ei3j76ZNGM9AdRDYZg9VzNHnWBWUb8dm8-1R-Ntjk0S5tByGYw7Hma';//Replace with your drive IId
+       // String itemId = '01C2GTNMRUNHQQM6NFTJGIR3C6d7DWL7O';
+
+        HttpRequest req = new HttpRequest();
+        req.setMethod('POST');
+        req.setHeader('Authorization', 'Bearer ' + getAccessToken());
+        req.setEndpoint(
+            'https://graph.microsoft.com/v1.0/drives/' +
+            driveId + '/items/' + itemId + '/preview'
+        );
+
+        req.setHeader('Accept', 'application/json');
+      
+        req.setHeader('Content-Length', String.valueOf(req.getBody().length()));
+        Http http = new Http();
+        HttpResponse res = http.send(req);
+        System.debug('res****'+res);
+       
+        System.debug('res****'+res.getBody());
+
+        if (res.getStatusCode() == 200) {
+            Map<String, Object> responseMap =
+                (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+            System.debug('url***'+(String) responseMap.get('getUrl'));
+            if (responseMap.containsKey('getUrl')) {
+                return (String) responseMap.get('getUrl');
+            }
+        }
+
+        throw new AuraHandledException(
+            'You do not have permission to preview this file'
+        );
+    }
+}
