@@ -78,6 +78,15 @@ req.setHeader('Content-Type', 'application/octet-stream');
 req.setBodyAsBlob(cv.VersionData);
 req.setTimeout(120000);
 
+
 HttpResponse res = new Http().send(req);
 System.debug('STATUS: ' + res.getStatusCode());
+
+----------------------------
+
+Set up the SharePoint auth in Salesforce — External Credential with the client's Entra app, then the Named Credential for Graph.
+
+Tested from Developer Console and got a 200, so the app permissions are already in place, no admin escalation needed.
+
+Pulled the drive ID for the WB Salesforce - POC library and successfully uploaded a file from Salesforce into SharePoint via Execute Anonymous.
 System.debug('BODY: ' + res.getBody());
