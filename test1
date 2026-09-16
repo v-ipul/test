@@ -12,3 +12,8 @@ req.setMethod('GET');
 HttpResponse res = new Http().send(req);
 System.debug('STATUS: ' + res.getStatusCode());
 System.debug('BODY: ' + res.getBody());
+
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:Sharepoint_Named_Credential/sites/bankunited.sharepoint.com:/sites/WB:/drives');
+req.setMethod('GET');
+System.debug(new Http().send(req).getBody());
