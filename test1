@@ -1,0 +1,6 @@
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:SharePoint_Named_Credential/sites?search=*');
+req.setMethod('GET');
+HttpResponse res = new Http().send(req);
+System.debug('STATUS: ' + res.getStatusCode());
+System.debug('BODY: ' + res.getBody());
