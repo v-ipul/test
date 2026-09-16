@@ -4,3 +4,11 @@ req.setMethod('GET');
 HttpResponse res = new Http().send(req);
 System.debug('STATUS: ' + res.getStatusCode());
 System.debug('BODY: ' + res.getBody());
+
+
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:SharePoint_Named_Credential/sites/<tenant>.sharepoint.com:/sites/<SiteName>');
+req.setMethod('GET');
+HttpResponse res = new Http().send(req);
+System.debug('STATUS: ' + res.getStatusCode());
+System.debug('BODY: ' + res.getBody());
