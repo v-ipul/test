@@ -1,0 +1,58 @@
+String driveId   = 'PASTE_DRIVE_ID_HERE';
+Id     accountId = 'PASTE_ACCOUNT_ID_HERE';
+String COL_NAME = 'Salesforce_x0020_Name';   
+String COL_ID   = 'SFID';                    
+String NC = 'callout:Sharepoint_Named_Credential';
+
+Set<Id> docIds = new Set<Id>();
+for (ContentDocumentLink l : [SELECT ContentDocumentId FROM ContentDocumentLink
+                              WHERE LinkedEntityId = :accountId]) {
+    docIds.add(l.ContentDocumentId);
+}
+
+String accountName = [SELECT Name FROM Account WHERE Id = :accountId].Name;
+String folder = accountName.replaceAll('[\\\\/:*?"<>|#%]', '-') + ' - ' + accountId;
+
+for (ContentVersion cv : [
+        SELECT Title, PathOnClient, FileExtension, VersionData, CreatedBy.Email
+        FROM ContentVersion
+        WHERE ContentDocumentId IN :docIds AND IsLatest = true]) {
+
+    String fileName = String.isNotBlank(cv.PathOnClient) ? cv.PathOnClient : cv.Title;
+    if (String.isNotBlank(cv.FileExtension) && !fileName.endsWith('.' + cv.FileExtension)) {
+        fileName += '.' + cv.FileExtension;
+    }
+    String path = EncodingUtil.urlEncode(folder, 'UTF-8').replace('+', '%20')
+                + '/' + EncodingUtil.urlEncode(fileName, 'UTF-8').replace('+', '%20');
+
+    HttpRequest up = new HttpRequest();
+    up.setEndpoint(NC + '/drives/' + driveId + '/root:/' + path + ':/content');
+    up.setMethod('PUT');
+    up.setHeader('Content-Type', 'application/octet-stream');
+    up.setBodyAsBlob(cv.VersionData);
+    up.setTimeout(120000);
+    HttpResponse upRes = new Http().send(up);
+    System.debug(fileName + ' upload -> ' + upRes.getStatusCode());
+
+    if (upRes.getStatusCode() > 201) {
+        System.debug('UPLOAD ERROR: ' + upRes.getBody());
+        continue;
+    }
+
+    String itemId = (String) ((Map<String,Object>)
+        JSON.deserializeUntyped(upRes.getBody())).get('id');
+
+    Map<String,Object> fields = new Map<String,Object>{
+        COL_NAME => fileName,
+        COL_ID   => cv.CreatedBy.Email
+    };
+
+    HttpRequest patch = new HttpRequest();
+    patch.setEndpoint(NC + '/drives/' + driveId + '/items/' + itemId + '/listItem/fields');
+    patch.setMethod('PATCH');
+    patch.setHeader('Content-Type', 'application/json');
+    patch.setBody(JSON.serialize(fields));
+    HttpResponse pRes = new Http().send(patch);
+
+    System.debug(fileName + ' metadata -> ' + pRes.getStatusCode() + '  ' + pRes.getBody());
+}
