@@ -90,3 +90,17 @@ Tested from Developer Console and got a 200, so the app permissions are already 
 
 Pulled the drive ID for the WB Salesforce - POC library and successfully uploaded a file from Salesforce into SharePoint via Execute Anonymous.
 System.debug('BODY: ' + res.getBody());
+
+
+--------------------------------
+
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:Sharepoint_Named_Credential/drives/PASTE_DRIVE_ID/list/columns');
+req.setMethod('GET');
+HttpResponse res = new Http().send(req);
+for (Object o : (List<Object>)((Map<String,Object>) JSON.deserializeUntyped(res.getBody())).get('value')) {
+    Map<String,Object> c = (Map<String,Object>) o;
+    System.debug('display: "' + c.get('displayName') + '"   ->   name: "' + c.get('name') + '"');
+}
+
+-------------
