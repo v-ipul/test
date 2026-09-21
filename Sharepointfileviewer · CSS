@@ -1,0 +1,10 @@
+.sp-body {
+    position: relative;
+    min-height: 5rem;
+}
+
+.sp-versions {
+    position: relative;
+    min-height: 3rem;
+    background: var(--lwc-colorBackgroundAlt, #fafaf9);
+}
