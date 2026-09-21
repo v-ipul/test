@@ -1,0 +1,61 @@
+/**
+ * Single source of truth for environment-specific SharePoint values.
+ * Nothing about the tenant, site or folder is hardcoded in Apex, so the same
+ * code deploys unchanged to any org. Edit SharePoint_Setting__mdt.Default instead.
+ */
+public with sharing class SharePointConfig {
+
+    public class ConfigException extends Exception {}
+
+    @TestVisible
+    private static SharePoint_Setting__mdt overrideSetting;
+
+    private static SharePoint_Setting__mdt cached;
+
+    public static SharePoint_Setting__mdt get() {
+        if (overrideSetting != null) {
+            return overrideSetting;
+        }
+        if (cached == null) {
+            cached = SharePoint_Setting__mdt.getInstance('Default');
+            if (cached == null) {
+                throw new ConfigException(
+                    'SharePoint_Setting__mdt record "Default" was not found. ' +
+                    'Create it under Setup > Custom Metadata Types > SharePoint Setting > Manage Records.');
+            }
+        }
+        return cached;
+    }
+
+    public static Boolean outboundEnabled() {
+        return get().Outbound_Sync_Enabled__c == true;
+    }
+
+    public static Long maxFileSizeBytes() {
+        Decimal configured = get().Max_File_Size_Bytes__c;
+        return configured == null ? 5000000L : configured.longValue();
+    }
+
+    public static String rootFolder() {
+        String root = get().Root_Folder__c;
+        return String.isBlank(root) ? '' : root.trim();
+    }
+
+    /**
+     * Lowercased API names of the objects whose file uploads should be pushed to
+     * SharePoint. An empty set disables outbound sync entirely.
+     */
+    public static Set<String> syncedObjects() {
+        Set<String> result = new Set<String>();
+        String raw = get().Synced_Objects__c;
+        if (String.isBlank(raw)) {
+            return result;
+        }
+        for (String part : raw.split(',')) {
+            if (String.isNotBlank(part)) {
+                result.add(part.trim().toLowerCase());
+            }
+        }
+        return result;
+    }
+}
