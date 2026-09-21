@@ -1,0 +1,187 @@
+/**
+ * Backs the sharepointFileViewer LWC.
+ *
+ * Reads the SharePoint folder belonging to the current record, shows version history
+ * for any file in it, and pulls a chosen version back into Salesforce as a new file.
+ */
+public with sharing class SharePointFileController {
+
+    /**
+     * Files in this record's own SharePoint folder. Returns an empty list rather than
+     * an error when the folder does not exist yet, because a record with no synced
+     * files is a normal state, not a failure.
+     */
+    @AuraEnabled
+    public static List<FileMetadata> getRecordFiles(Id recordId) {
+        if (recordId == null) {
+            throw buildException('This component has to be placed on a record page.');
+        }
+        try {
+            String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
+            List<FileMetadata> files = new List<FileMetadata>();
+
+            for (Object entry : SharePointService.listChildren(folderPath)) {
+                Map<String, Object> item = (Map<String, Object>) entry;
+                if (item.containsKey('folder')) {
+                    continue;
+                }
+                files.add(toMetadata(item));
+            }
+            return files;
+        } catch (SharePointService.SharePointException e) {
+            if (e.getMessage().contains('404') || e.getMessage().containsIgnoreCase('itemNotFound')) {
+                return new List<FileMetadata>();
+            }
+            throw buildException(e.getMessage());
+        } catch (Exception e) {
+            throw buildException(e.getMessage());
+        }
+    }
+
+    @AuraEnabled
+    public static List<VersionMetadata> getFileVersions(String itemId) {
+        if (String.isBlank(itemId)) {
+            throw buildException('No file was selected.');
+        }
+        try {
+            List<VersionMetadata> versions = new List<VersionMetadata>();
+            for (Object entry : SharePointService.listVersions(itemId)) {
+                Map<String, Object> raw = (Map<String, Object>) entry;
+
+                VersionMetadata v = new VersionMetadata();
+                v.id = (String) raw.get('id');
+                v.lastModifiedDateTime = (String) raw.get('lastModifiedDateTime');
+                v.size = toLong(raw.get('size'));
+                v.lastModifiedBy = displayName(raw.get('lastModifiedBy'));
+                versions.add(v);
+            }
+            return versions;
+        } catch (Exception e) {
+            throw buildException(e.getMessage());
+        }
+    }
+
+    /**
+     * Pulls one version out of SharePoint and files it against the record as a new
+     * Salesforce file. This replaces the usual "give the browser a download link"
+     * approach, which does not work: Graph has no public URL for a historical version.
+     */
+    @AuraEnabled
+    public static Id restoreVersionToRecord(String itemId, String versionId, String fileName, Id recordId) {
+        if (String.isBlank(itemId) || String.isBlank(versionId)) {
+            throw buildException('No version was selected.');
+        }
+        if (recordId == null) {
+            throw buildException('This component has to be placed on a record page.');
+        }
+        if (!Schema.SObjectType.ContentVersion.isCreateable() || !Schema.SObjectType.ContentDocumentLink.isCreateable()) {
+            throw buildException('You do not have permission to add files to this record.');
+        }
+
+        Boolean previousBypass = SharePointSyncBypass.disabled;
+        try {
+            Blob body = SharePointService.downloadVersion(itemId, versionId);
+            String safeName = buildRestoredName(fileName, versionId);
+
+            ContentVersion cv = new ContentVersion(
+                Title = safeName,
+                PathOnClient = safeName,
+                VersionData = body,
+                SharePoint_Sync_Status__c = 'Restored from SharePoint version ' + versionId
+            );
+
+            // The bytes already live in SharePoint, so the outbound trigger must not
+            // push this copy straight back and create a duplicate.
+            SharePointSyncBypass.disabled = true;
+            insert cv;
+
+            Id contentDocumentId = [
+                SELECT ContentDocumentId FROM ContentVersion WHERE Id = :cv.Id LIMIT 1
+            ].ContentDocumentId;
+
+            insert new ContentDocumentLink(
+                ContentDocumentId = contentDocumentId,
+                LinkedEntityId = recordId,
+                ShareType = 'V',
+                Visibility = 'AllUsers'
+            );
+            return cv.Id;
+        } catch (Exception e) {
+            throw buildException(e.getMessage());
+        } finally {
+            SharePointSyncBypass.disabled = previousBypass;
+        }
+    }
+
+    /**
+     * "quote.pdf" plus version 3.0 becomes "quote (v3.0).pdf" so the restored copy
+     * does not collide with the current file in the Salesforce Files list.
+     */
+    @TestVisible
+    private static String buildRestoredName(String fileName, String versionId) {
+        String base = String.isBlank(fileName) ? 'SharePoint file' : fileName;
+        Integer dot = base.lastIndexOf('.');
+        if (dot > 0) {
+            return base.substring(0, dot) + ' (v' + versionId + ')' + base.substring(dot);
+        }
+        return base + ' (v' + versionId + ')';
+    }
+
+    private static FileMetadata toMetadata(Map<String, Object> item) {
+        FileMetadata f = new FileMetadata();
+        f.id = (String) item.get('id');
+        f.name = (String) item.get('name');
+        f.webUrl = (String) item.get('webUrl');
+        f.size = toLong(item.get('size'));
+        f.createdBy = displayName(item.get('createdBy'));
+        f.lastModifiedBy = displayName(item.get('lastModifiedBy'));
+        f.lastModifiedDateTime = (String) item.get('lastModifiedDateTime');
+        return f;
+    }
+
+    /**
+     * Untyped JSON gives an Integer for small numbers and a Long or Decimal for large
+     * ones, so a straight (Integer) cast throws on big files.
+     */
+    private static Long toLong(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        return Long.valueOf(String.valueOf(value));
+    }
+
+    private static String displayName(Object identitySet) {
+        if (identitySet == null) {
+            return null;
+        }
+        Map<String, Object> user = (Map<String, Object>) ((Map<String, Object>) identitySet).get('user');
+        return user == null ? null : (String) user.get('displayName');
+    }
+
+    /**
+     * new AuraHandledException(msg) alone surfaces "Script-thrown exception" in the
+     * browser. setMessage is what actually reaches error.body.message.
+     */
+    private static AuraHandledException buildException(String message) {
+        AuraHandledException e = new AuraHandledException(message);
+        e.setMessage(message);
+        return e;
+    }
+
+    public class FileMetadata {
+        @AuraEnabled public String id;
+        @AuraEnabled public String name;
+        @AuraEnabled public String webUrl;
+        @AuraEnabled public Long size;
+        @AuraEnabled public String createdBy;
+        @AuraEnabled public String lastModifiedBy;
+        @AuraEnabled public String lastModifiedDateTime;
+    }
+
+    public class VersionMetadata {
+        @AuraEnabled public String id;
+        @AuraEnabled public String lastModifiedDateTime;
+        @AuraEnabled public Long size;
+        @AuraEnabled public String lastModifiedBy;
+    }
+}
