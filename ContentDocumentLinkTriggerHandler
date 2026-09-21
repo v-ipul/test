@@ -1,0 +1,41 @@
+/**
+ * Fires on the link between a file and a record, not on ContentVersion, because the
+ * link is where the parent record Id becomes known.
+ */
+public with sharing class ContentDocumentLinkTriggerHandler {
+
+    public static void afterInsert(List<ContentDocumentLink> links) {
+        if (SharePointSyncBypass.disabled) {
+            return;
+        }
+        if (!SharePointConfig.outboundEnabled()) {
+            return;
+        }
+        Set<String> allowedObjects = SharePointConfig.syncedObjects();
+        if (allowedObjects.isEmpty()) {
+            return;
+        }
+
+        List<SharePointOutboundQueueable.SyncItem> items = new List<SharePointOutboundQueueable.SyncItem>();
+        for (ContentDocumentLink link : links) {
+            if (link.LinkedEntityId == null || link.ContentDocumentId == null) {
+                continue;
+            }
+            // Skips the automatic link to the uploading User and to Chatter groups.
+            String objectName = link.LinkedEntityId.getSObjectType().getDescribe().getName().toLowerCase();
+            if (!allowedObjects.contains(objectName)) {
+                continue;
+            }
+            items.add(new SharePointOutboundQueueable.SyncItem(link.ContentDocumentId, link.LinkedEntityId));
+        }
+
+        if (items.isEmpty()) {
+            return;
+        }
+        if (Limits.getQueueableJobs() >= Limits.getLimitQueueableJobs()) {
+            System.debug(LoggingLevel.WARN, 'Queueable limit reached, skipping SharePoint sync for ' + items.size() + ' file(s).');
+            return;
+        }
+        System.enqueueJob(new SharePointOutboundQueueable(items));
+    }
+}
