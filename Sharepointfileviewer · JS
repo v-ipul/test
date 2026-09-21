@@ -1,0 +1,157 @@
+import { LightningElement, api } from 'lwc';
+import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+import { RefreshEvent } from 'lightning/refresh';
+import getRecordFiles from '@salesforce/apex/SharePointFileController.getRecordFiles';
+import getFileVersions from '@salesforce/apex/SharePointFileController.getFileVersions';
+import restoreVersionToRecord from '@salesforce/apex/SharePointFileController.restoreVersionToRecord';
+
+export default class SharepointFileViewer extends LightningElement {
+    @api recordId;
+
+    files = [];
+    isLoading = false;
+    errorMessage;
+    expandedId;
+    versions = [];
+    versionsLoading = false;
+
+    connectedCallback() {
+        this.loadFiles();
+    }
+
+    get hasFiles() {
+        return this.files.length > 0;
+    }
+
+    get showEmptyState() {
+        return !this.isLoading && !this.errorMessage && !this.hasFiles;
+    }
+
+    get decoratedFiles() {
+        return this.files.map((file) => ({
+            ...file,
+            sizeLabel: this.formatSize(file.size),
+            modifiedLabel: this.formatDate(file.lastModifiedDateTime),
+            isExpanded: file.id === this.expandedId,
+            toggleLabel: file.id === this.expandedId ? 'Hide history' : 'Version history'
+        }));
+    }
+
+    get decoratedVersions() {
+        return this.versions.map((version) => ({
+            ...version,
+            sizeLabel: this.formatSize(version.size),
+            modifiedLabel: this.formatDate(version.lastModifiedDateTime)
+        }));
+    }
+
+    async loadFiles() {
+        this.isLoading = true;
+        this.errorMessage = undefined;
+        this.expandedId = undefined;
+        try {
+            this.files = await getRecordFiles({ recordId: this.recordId });
+        } catch (error) {
+            this.files = [];
+            this.errorMessage = this.reduceError(error);
+        } finally {
+            this.isLoading = false;
+        }
+    }
+
+    handleRefresh() {
+        this.loadFiles();
+    }
+
+    async handleToggleVersions(event) {
+        const fileId = event.currentTarget.dataset.id;
+
+        if (this.expandedId === fileId) {
+            this.expandedId = undefined;
+            this.versions = [];
+            return;
+        }
+
+        this.expandedId = fileId;
+        this.versions = [];
+        this.versionsLoading = true;
+        this.errorMessage = undefined;
+        try {
+            this.versions = await getFileVersions({ itemId: fileId });
+        } catch (error) {
+            this.errorMessage = this.reduceError(error);
+            this.expandedId = undefined;
+        } finally {
+            this.versionsLoading = false;
+        }
+    }
+
+    handleOpen(event) {
+        const url = event.currentTarget.dataset.url;
+        if (url) {
+            window.open(url, '_blank', 'noopener');
+        }
+    }
+
+    async handleRestore(event) {
+        const versionId = event.currentTarget.dataset.version;
+        const file = this.files.find((f) => f.id === this.expandedId);
+        if (!file) {
+            return;
+        }
+
+        this.versionsLoading = true;
+        try {
+            await restoreVersionToRecord({
+                itemId: file.id,
+                versionId,
+                fileName: file.name,
+                recordId: this.recordId
+            });
+            this.toast(
+                'Version restored',
+                `${file.name} version ${versionId} was added to this record as a Salesforce file.`,
+                'success'
+            );
+            this.dispatchEvent(new RefreshEvent());
+        } catch (error) {
+            this.errorMessage = this.reduceError(error);
+            this.toast('Restore failed', this.errorMessage, 'error');
+        } finally {
+            this.versionsLoading = false;
+        }
+    }
+
+    formatSize(bytes) {
+        const size = Number(bytes);
+        if (!size) {
+            return '0 KB';
+        }
+        if (size < 1024) {
+            return `${size} B`;
+        }
+        if (size < 1048576) {
+            return `${(size / 1024).toFixed(1)} KB`;
+        }
+        return `${(size / 1048576).toFixed(1)} MB`;
+    }
+
+    formatDate(isoString) {
+        if (!isoString) {
+            return '';
+        }
+        const parsed = new Date(isoString);
+        return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString();
+    }
+
+    reduceError(error) {
+        if (Array.isArray(error?.body)) {
+            return error.body.map((e) => e.message).join(', ');
+        }
+        return error?.body?.message || error?.message || 'Unexpected error. Check the browser console.';
+    }
+
+    toast(title, message, variant) {
+        this.dispatchEvent(new ShowToastEvent({ title, message, variant }));
+    }
+}
