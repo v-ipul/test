@@ -163,15 +163,15 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
         if (versions.isEmpty()) {
             return;
         }
-        ContentVersion update_ = new ContentVersion(Id = versions[0].Id, SharePoint_Sync_Status__c = status);
+        ContentVersion cvUpdate = new ContentVersion(Id = versions[0].Id, SharePoint_Sync_Status__c = status);
         if (String.isNotBlank(webUrl)) {
-            update_.SharePoint_Item_URL__c = webUrl;
+            cvUpdate.SharePoint_Item_URL__c = webUrl;
         }
 
         Boolean previous = SharePointSyncBypass.disabled;
         SharePointSyncBypass.disabled = true;
         try {
-            update update_;
+            update cvUpdate;
         } catch (DmlException e) {
             System.debug(LoggingLevel.ERROR, 'Could not stamp sync status: ' + e.getMessage());
         } finally {
