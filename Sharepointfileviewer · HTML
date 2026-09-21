@@ -1,0 +1,88 @@
+<template>
+    <lightning-card title="SharePoint files" icon-name="doctype:folder">
+        <lightning-button-icon
+            slot="actions"
+            icon-name="utility:refresh"
+            alternative-text="Refresh"
+            title="Refresh"
+            onclick={handleRefresh}>
+        </lightning-button-icon>
+
+        <div class="slds-p-horizontal_medium sp-body">
+            <template lwc:if={isLoading}>
+                <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+            </template>
+
+            <template lwc:if={errorMessage}>
+                <div class="slds-text-color_error slds-p-bottom_small">{errorMessage}</div>
+            </template>
+
+            <template lwc:if={hasFiles}>
+                <ul class="slds-has-dividers_bottom-space">
+                    <template for:each={decoratedFiles} for:item="file">
+                        <li key={file.id} class="slds-item slds-p-vertical_x-small">
+                            <div class="slds-grid slds-grid_vertical-align-center slds-wrap">
+                                <div class="slds-col slds-size_1-of-2">
+                                    <div class="slds-text-body_regular">{file.name}</div>
+                                    <div class="slds-text-body_small slds-text-color_weak">
+                                        {file.sizeLabel} &middot; modified {file.modifiedLabel}
+                                    </div>
+                                </div>
+                                <div class="slds-col slds-size_1-of-2 slds-text-align_right">
+                                    <lightning-button
+                                        variant="base"
+                                        label="Open"
+                                        data-url={file.webUrl}
+                                        onclick={handleOpen}>
+                                    </lightning-button>
+                                    <lightning-button
+                                        variant="base"
+                                        class="slds-p-left_small"
+                                        label={file.toggleLabel}
+                                        data-id={file.id}
+                                        onclick={handleToggleVersions}>
+                                    </lightning-button>
+                                </div>
+                            </div>
+
+                            <template lwc:if={file.isExpanded}>
+                                <div class="slds-box slds-box_x-small slds-m-top_x-small sp-versions">
+                                    <template lwc:if={versionsLoading}>
+                                        <lightning-spinner alternative-text="Loading versions" size="x-small"></lightning-spinner>
+                                    </template>
+
+                                    <template for:each={decoratedVersions} for:item="version">
+                                        <div key={version.id} class="slds-grid slds-grid_vertical-align-center slds-wrap slds-p-vertical_xx-small">
+                                            <div class="slds-col slds-size_1-of-2">
+                                                <span class="slds-text-body_small">
+                                                    v{version.id} &middot; {version.sizeLabel}
+                                                </span>
+                                                <div class="slds-text-body_small slds-text-color_weak">
+                                                    {version.modifiedLabel} &middot; {version.lastModifiedBy}
+                                                </div>
+                                            </div>
+                                            <div class="slds-col slds-size_1-of-2 slds-text-align_right">
+                                                <lightning-button
+                                                    variant="base"
+                                                    label="Copy to Salesforce"
+                                                    data-version={version.id}
+                                                    onclick={handleRestore}>
+                                                </lightning-button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </li>
+                    </template>
+                </ul>
+            </template>
+
+            <template lwc:if={showEmptyState}>
+                <p class="slds-text-color_weak slds-p-vertical_small">
+                    No files in this record's SharePoint folder yet.
+                </p>
+            </template>
+        </div>
+    </lightning-card>
+</template>
