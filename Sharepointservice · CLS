@@ -110,20 +110,37 @@ public with sharing class SharePointService {
     }
 
     /**
-     * Simple upload. Returns the created driveItem so the caller can keep webUrl.
+     * Simple upload of a NEW file. Salesforce never edits or replaces a document that
+     * already exists in SharePoint: conflictBehavior=rename means a name clash creates
+     * "quote 1.pdf" beside the original instead of overwriting it and pushing a new
+     * version onto someone else's document.
+     *
+     * Switch CONFLICT_BEHAVIOUR to 'fail' if a clash should be rejected outright
+     * rather than landing under a new name; the 409 is already handled below.
+     *
+     * Returns the created driveItem, whose 'name' is the name SharePoint actually
+     * used, which differs from the requested one whenever a rename happened.
+     *
      * If the destination folder does not exist yet Graph answers 404, so we create
      * the folder chain and retry once. That keeps the happy path to a single callout.
      */
+    private static final String CONFLICT_BEHAVIOUR = 'rename';
+
     public static Map<String, Object> uploadFile(String folderPath, String fileName, Blob content) {
         if (content == null) {
             throw new SharePointException('File body is empty.');
         }
-        String url = driveBase() + '/root:/' + encodePath(folderPath) + '/' + encodeSegment(fileName) + ':/content';
+        String url = driveBase() + '/root:/' + encodePath(folderPath) + '/' + encodeSegment(fileName) +
+                     ':/content?@microsoft.graph.conflictBehavior=' + CONFLICT_BEHAVIOUR;
 
         HttpResponse res = send('PUT', url, content, 'application/octet-stream', 'application/json');
         if (res.getStatusCode() == 404) {
             ensureFolder(folderPath);
             res = send('PUT', url, content, 'application/octet-stream', 'application/json');
+        }
+        if (res.getStatusCode() == 409) {
+            throw new SharePointException('A file named "' + fileName +
+                '" already exists in SharePoint and was left untouched.');
         }
         if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
             throw new SharePointException('Upload failed (HTTP ' + res.getStatusCode() + '): ' + truncate(res.getBody()));
