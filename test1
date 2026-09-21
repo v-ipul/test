@@ -1,57 +1,10 @@
-HttpRequest req = new HttpRequest();
-req.setEndpoint('callout:SharePoint_Named_Credential/sites?search=*');
-req.setMethod('GET');
-HttpResponse res = new Http().send(req);
-System.debug('STATUS: ' + res.getStatusCode());
-System.debug('BODY: ' + res.getBody());
+What you need, in order
 
---------------------------------------------
+First, the metadata — Apex won't save without it:
 
-HttpRequest req = new HttpRequest();
-req.setEndpoint('callout:SharePoint_Named_Credential/sites/bankunited.sharepoint.com:/sites/WB');
-req.setMethod('GET');
-HttpResponse res = new Http().send(req);
-System.debug('STATUS: ' + res.getStatusCode());
-System.debug('BODY: ' + res.getBody());
-
---------------------------------------------
-
-HttpRequest req = new HttpRequest();
-req.setEndpoint('callout:Sharepoint_Named_Credential/sites/bankunited.sharepoint.com:/sites/WB:/drives');
-req.setMethod('GET');
-System.debug(new Http().send(req).getBody());
-
---------------------------------------------
-
-String NC   = 'callout:Sharepoint_Named_Credential';
-String SITE = '/sites/bankunited.sharepoint.com:/sites/WB:';
-
-// find the POC library
-HttpRequest r1 = new HttpRequest();
-r1.setEndpoint(NC + SITE + '/drives');
-r1.setMethod('GET');
-HttpResponse s1 = new Http().send(r1);
-
-String driveId;
-for (Object o : (List<Object>)((Map<String,Object>) JSON.deserializeUntyped(s1.getBody())).get('value')) {
-    Map<String,Object> d = (Map<String,Object>) o;
-    System.debug('LIBRARY: ' + d.get('name') + '  ->  ' + d.get('id'));
-    if (((String) d.get('name')).containsIgnoreCase('POC')) {
-        driveId = (String) d.get('id');
-    }
-}
-System.debug('DRIVE ID: ' + driveId);
-
-// write a test file to the library root
-HttpRequest r2 = new HttpRequest();
-r2.setEndpoint(NC + '/drives/' + driveId + '/root:/test-from-salesforce.txt:/content');
-r2.setMethod('PUT');
-r2.setHeader('Content-Type', 'text/plain');
-r2.setBodyAsBlob(Blob.valueOf('Hello from Salesforce'));
-HttpResponse s2 = new Http().send(r2);
-
-System.debug('STATUS: ' + s2.getStatusCode());
-System.debug('BODY: ' + s2.getBody());
+Custom metadata type SharePoint_Setting__mdt with 10 fields: Named_Credential__c, Site_Hostname__c, Site_Path__c, Drive_Name__c, Root_Folder__c, Column_File_Name__c, Column_Uploaded_By__c, Synced_Objects__c (all Text 255), Outbound_Sync_Enabled__c (Checkbox), Max_File_Size_Bytes__c (Number 12,0)
+The Default record on that type, filled in with your values
+Two ContentVersion fields: SharePoint_Item_URL__c (URL) and SharePoint_Sync_Status__c (Text 255)
 
 --------------------------------------------
 
