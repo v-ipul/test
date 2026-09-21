@@ -73,9 +73,20 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
         String webUrl = (String) driveItem.get('webUrl');
         String itemId = (String) driveItem.get('id');
 
-        stampColumns(itemId, fileName, cv.CreatedBy == null ? null : cv.CreatedBy.Email);
+        // SharePoint renames rather than overwrites on a name clash, so the stored name
+        // can differ from the Salesforce one. Record the real name, not the requested one.
+        String storedName = (String) driveItem.get('name');
+        if (String.isBlank(storedName)) {
+            storedName = fileName;
+        }
 
-        recordStatus(item.contentDocumentId, webUrl, 'Synced ' + Datetime.now().format());
+        stampColumns(itemId, storedName, cv.CreatedBy == null ? null : cv.CreatedBy.Email);
+
+        String status = 'Synced ' + Datetime.now().format();
+        if (!storedName.equals(fileName)) {
+            status += ' (saved as "' + storedName + '")';
+        }
+        recordStatus(item.contentDocumentId, webUrl, status);
     }
 
     /**
