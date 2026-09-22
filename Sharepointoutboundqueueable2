@@ -1,0 +1,288 @@
+/**
+ * Pushes a copy of a Salesforce file into SharePoint. The Salesforce file is left
+ * untouched, so the record keeps its attachment and SharePoint gets a mirror.
+ *
+ * One file is processed per execution and the remainder is chained, which keeps a
+ * single VersionData blob in heap at a time no matter how many files were uploaded
+ * in one go.
+ */
+public class SharePointOutboundQueueable implements Queueable, Database.AllowsCallouts {
+
+    public class SyncItem {
+        public Id contentDocumentId;
+        public Id linkedEntityId;
+        public SyncItem(Id contentDocumentId, Id linkedEntityId) {
+            this.contentDocumentId = contentDocumentId;
+            this.linkedEntityId = linkedEntityId;
+        }
+    }
+
+    private List<SyncItem> pending;
+
+    public SharePointOutboundQueueable(List<SyncItem> pending) {
+        this.pending = pending == null ? new List<SyncItem>() : pending;
+    }
+
+    public void execute(QueueableContext context) {
+        if (pending.isEmpty()) {
+            return;
+        }
+        SyncItem item = pending.remove(0);
+        try {
+            process(item);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'SharePoint outbound sync failed: ' + e.getMessage() + '\n' + e.getStackTraceString());
+            recordStatus(item.contentDocumentId, null, 'Failed: ' + abbreviate(e.getMessage()));
+        }
+
+        // Chaining is not permitted inside a test context.
+        if (!pending.isEmpty() && !Test.isRunningTest()) {
+            System.enqueueJob(new SharePointOutboundQueueable(pending));
+        }
+    }
+
+    private void process(SyncItem item) {
+        List<ContentVersion> versions = [
+            SELECT Id, Title, PathOnClient, FileExtension, ContentSize, VersionData,
+                   SharePoint_Item_URL__c, CreatedBy.Email
+            FROM ContentVersion
+            WHERE ContentDocumentId = :item.contentDocumentId AND IsLatest = true
+            LIMIT 1
+        ];
+        if (versions.isEmpty()) {
+            return;
+        }
+        ContentVersion cv = versions[0];
+
+        // Already mirrored, or came from SharePoint in the first place.
+        if (String.isNotBlank(cv.SharePoint_Item_URL__c)) {
+            return;
+        }
+
+        Long maxBytes = SharePointConfig.maxFileSizeBytes();
+        if (cv.ContentSize != null && cv.ContentSize > maxBytes) {
+            recordStatus(item.contentDocumentId, null,
+                'Skipped: ' + cv.ContentSize + ' bytes exceeds the configured limit of ' + maxBytes + '.');
+            return;
+        }
+
+        String folderPath = buildFolderPath(item.linkedEntityId);
+        String fileName = buildFileName(cv);
+
+        SharePointService.UploadResult upload = SharePointService.uploadFile(folderPath, fileName, cv.VersionData);
+        Map<String, Object> driveItem = upload.item;
+        String webUrl = (String) driveItem.get('webUrl');
+        String itemId = (String) driveItem.get('id');
+
+        // Only when this upload created the record folder, so the owner is granted once
+        // rather than on every file.
+        String folderNote = grantOwnerFolderAccess(upload.createdFolder, item.linkedEntityId);
+
+        // SharePoint renames rather than overwrites on a name clash, so the stored name
+        // can differ from the Salesforce one. Record the real name, not the requested one.
+        String storedName = (String) driveItem.get('name');
+        if (String.isBlank(storedName)) {
+            storedName = fileName;
+        }
+
+        String uploaderEmail = cv.CreatedBy == null ? null : cv.CreatedBy.Email;
+
+        stampColumns(itemId, storedName, uploaderEmail);
+        String accessNote = grantUploaderAccess(itemId, uploaderEmail);
+
+        String status = 'Synced ' + Datetime.now().format();
+        if (!storedName.equals(fileName)) {
+            status += ' (saved as "' + storedName + '")';
+        }
+        if (String.isNotBlank(accessNote)) {
+            status += ' ' + accessNote;
+        }
+        if (String.isNotBlank(folderNote)) {
+            status += ' ' + folderNote;
+        }
+        recordStatus(item.contentDocumentId, webUrl, status);
+    }
+
+    /**
+     * Writes the library's own columns so a SharePoint user can see which Salesforce
+     * file this is and who uploaded it. Column names come from custom metadata, so a
+     * client whose library uses different columns needs no code change.
+     * A column failure must not undo a successful upload, so it is logged, not thrown.
+     */
+    private static void stampColumns(String itemId, String fileName, String uploaderEmail) {
+        if (String.isBlank(itemId)) {
+            return;
+        }
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+        Map<String, Object> fields = new Map<String, Object>();
+        if (String.isNotBlank(cfg.Column_File_Name__c)) {
+            fields.put(cfg.Column_File_Name__c.trim(), fileName);
+        }
+        if (String.isNotBlank(cfg.Column_Uploaded_By__c) && String.isNotBlank(uploaderEmail)) {
+            fields.put(cfg.Column_Uploaded_By__c.trim(), uploaderEmail);
+        }
+        if (fields.isEmpty()) {
+            return;
+        }
+        try {
+            SharePointService.setListItemFields(itemId, fields);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'File uploaded but columns not set: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Adds the Salesforce uploader to the file's SharePoint permissions.
+     *
+     * Additive only: anyone who could already see the library still can. This does not
+     * make the file private, which would need role inheritance broken on the item.
+     *
+     * Returns a short note for the sync status, or blank when nothing was attempted.
+     * A permission failure must not lose a successfully uploaded file, so it is
+     * reported rather than thrown.
+     */
+    private static String grantUploaderAccess(String itemId, String uploaderEmail) {
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+        if (cfg.Grant_Uploader_Access__c != true) {
+            return null;
+        }
+        if (String.isBlank(itemId) || String.isBlank(uploaderEmail)) {
+            return '(no uploader email to grant access to)';
+        }
+        try {
+            SharePointService.grantAccess(itemId, uploaderEmail, cfg.Uploader_Access_Role__c);
+            return null;
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'File uploaded but access not granted: ' + e.getMessage());
+            return '(access grant failed)';
+        }
+    }
+
+    /**
+     * Gives the record's owner access to the record's own SharePoint folder, at the
+     * moment that folder is first created. Everything later synced into the folder
+     * inherits the grant, so this runs once per record rather than once per file.
+     *
+     * Additive, like the per-file grant: it does not hide the folder from anyone who
+     * can already see the library.
+     *
+     * Returns a short note for the sync status, or blank when nothing was attempted.
+     */
+    private static String grantOwnerFolderAccess(Map<String, Object> createdFolder, Id recordId) {
+        if (createdFolder == null) {
+            return null;
+        }
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+        if (cfg.Grant_Owner_Folder_Access__c != true) {
+            return null;
+        }
+        String folderId = (String) createdFolder.get('id');
+        if (String.isBlank(folderId)) {
+            return null;
+        }
+
+        String ownerEmail = resolveOwnerEmail(recordId);
+        if (String.isBlank(ownerEmail)) {
+            return '(no owner email for folder access)';
+        }
+        try {
+            SharePointService.grantAccess(folderId, ownerEmail, cfg.Owner_Access_Role__c);
+            return null;
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Folder created but owner access not granted: ' + e.getMessage());
+            return '(folder access grant failed)';
+        }
+    }
+
+    /**
+     * OwnerId can point at a Queue on some objects, which has no email, so the type is
+     * checked before the User is read.
+     */
+    @TestVisible
+    private static String resolveOwnerEmail(Id recordId) {
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        if (!describe.fields.getMap().containsKey('OwnerId') || !describe.isAccessible()) {
+            return null;
+        }
+        List<SObject> records = Database.query(
+            'SELECT OwnerId FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1');
+        if (records.isEmpty()) {
+            return null;
+        }
+        Id ownerId = (Id) records[0].get('OwnerId');
+        if (ownerId == null || ownerId.getSObjectType() != User.SObjectType) {
+            return null;
+        }
+        List<User> owners = [SELECT Email FROM User WHERE Id = :ownerId LIMIT 1];
+        return owners.isEmpty() ? null : owners[0].Email;
+    }
+
+    /**
+     * {RootFolder}/{Object label}/{Record name} - {Record Id}
+     * The Id suffix keeps folders stable when a record is renamed.
+     */
+    @TestVisible
+    public static String buildFolderPath(Id recordId) {
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        String recordName = String.valueOf(recordId);
+
+        if (describe.fields.getMap().containsKey('Name') && describe.isAccessible()) {
+            String soql = 'SELECT Name FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1';
+            List<SObject> records = Database.query(soql);
+            if (!records.isEmpty() && records[0].get('Name') != null) {
+                recordName = String.valueOf(records[0].get('Name'));
+            }
+        }
+
+        String path = SharePointService.sanitize(describe.getLabelPlural()) + '/' +
+                      SharePointService.sanitize(recordName) + ' - ' + recordId;
+
+        String root = SharePointConfig.rootFolder();
+        return String.isBlank(root) ? path : root + '/' + path;
+    }
+
+    @TestVisible
+    private static String buildFileName(ContentVersion cv) {
+        String name = String.isNotBlank(cv.PathOnClient) ? cv.PathOnClient : cv.Title;
+        if (String.isNotBlank(cv.FileExtension) && !name.toLowerCase().endsWith('.' + cv.FileExtension.toLowerCase())) {
+            name += '.' + cv.FileExtension;
+        }
+        return SharePointService.sanitize(name);
+    }
+
+    /**
+     * Stamps the outcome onto the ContentVersion. The bypass flag stops this update
+     * from re-entering the trigger.
+     */
+    private static void recordStatus(Id contentDocumentId, String webUrl, String status) {
+        List<ContentVersion> versions = [
+            SELECT Id FROM ContentVersion
+            WHERE ContentDocumentId = :contentDocumentId AND IsLatest = true
+            LIMIT 1
+        ];
+        if (versions.isEmpty()) {
+            return;
+        }
+        ContentVersion cvUpdate = new ContentVersion(Id = versions[0].Id, SharePoint_Sync_Status__c = status);
+        if (String.isNotBlank(webUrl)) {
+            cvUpdate.SharePoint_Item_URL__c = webUrl;
+        }
+
+        Boolean previous = SharePointSyncBypass.disabled;
+        SharePointSyncBypass.disabled = true;
+        try {
+            update cvUpdate;
+        } catch (DmlException e) {
+            System.debug(LoggingLevel.ERROR, 'Could not stamp sync status: ' + e.getMessage());
+        } finally {
+            SharePointSyncBypass.disabled = previous;
+        }
+    }
+
+    private static String abbreviate(String message) {
+        if (String.isBlank(message)) {
+            return 'Unknown error';
+        }
+        return message.length() > 200 ? message.substring(0, 200) : message;
+    }
+}
