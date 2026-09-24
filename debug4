@@ -1,0 +1,48 @@
+String NC = 'callout:Sharepoint_Named_Credential';
+String driveId = 'PASTE_DRIVE_ID';
+String myEmail = UserInfo.getUserEmail().removeEnd('.invalid');
+
+void log(String label, HttpRequest req, HttpResponse res) {
+    System.debug('\n===== ' + label + ' =====');
+    System.debug('REQUEST: ' + req.getMethod() + ' ' + req.getEndpoint());
+    if (req.getBody() != null) System.debug('BODY: ' + req.getBody());
+    System.debug('STATUS: ' + res.getStatusCode());
+    try {
+        System.debug('RESPONSE:\n' + JSON.serializePretty(JSON.deserializeUntyped(res.getBody())));
+    } catch (Exception e) { System.debug('RESPONSE: ' + res.getBody()); }
+}
+
+// 1. Folder creation
+HttpRequest f = new HttpRequest();
+f.setEndpoint(NC + '/drives/' + driveId + '/root/children');
+f.setMethod('POST');
+f.setHeader('Content-Type', 'application/json');
+f.setBody('{"name":"_docs-sample-folder","folder":{},"@microsoft.graph.conflictBehavior":"fail"}');
+HttpResponse fRes = new Http().send(f);
+log('1. POST create folder', f, fRes);
+
+String folderId = (String) ((Map<String,Object>) JSON.deserializeUntyped(fRes.getBody())).get('id');
+
+// 2. File creation inside that folder
+HttpRequest u = new HttpRequest();
+u.setEndpoint(NC + '/drives/' + driveId + '/root:/_docs-sample-folder/_docs-sample.txt:/content');
+u.setMethod('PUT');
+u.setHeader('Content-Type', 'application/octet-stream');
+u.setBodyAsBlob(Blob.valueOf('sample'));
+log('2. PUT create file', u, new Http().send(u));
+
+// 3. Grant read access to an internal user
+HttpRequest i1 = new HttpRequest();
+i1.setEndpoint(NC + '/drives/' + driveId + '/items/' + folderId + '/invite');
+i1.setMethod('POST');
+i1.setHeader('Content-Type', 'application/json');
+i1.setBody('{"recipients":[{"email":"' + myEmail + '"}],"requireSignIn":true,"sendInvitation":false,"roles":["read"]}');
+log('3. POST invite internal user', i1, new Http().send(i1));
+
+// 4. Grant read access to an external address
+HttpRequest i2 = new HttpRequest();
+i2.setEndpoint(NC + '/drives/' + driveId + '/items/' + folderId + '/invite');
+i2.setMethod('POST');
+i2.setHeader('Content-Type', 'application/json');
+i2.setBody('{"recipients":[{"email":"sp-integration-test@example.com"}],"requireSignIn":true,"sendInvitation":false,"roles":["read"]}');
+log('4. POST invite external user', i2, new Http().send(i2));
