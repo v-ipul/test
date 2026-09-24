@@ -74,9 +74,7 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
         String webUrl = (String) driveItem.get('webUrl');
         String itemId = (String) driveItem.get('id');
 
-        // Only when this upload created the record folder, so the owner is granted once
-        // rather than on every file.
-        String folderNote = grantOwnerFolderAccess(upload.createdFolder, item.linkedEntityId);
+        String folderNote = grantOwnerFolderAccess(folderPath, item.linkedEntityId);
 
         // SharePoint renames rather than overwrites on a name clash, so the stored name
         // can differ from the Salesforce one. Record the real name, not the requested one.
@@ -159,37 +157,31 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
     }
 
     /**
-     * Gives the record's owner access to the record's own SharePoint folder, at the
-     * moment that folder is first created. Everything later synced into the folder
-     * inherits the grant, so this runs once per record rather than once per file.
+     * Gives the record's owner access to the record's own SharePoint folder, so they
+     * can see every file synced into it. Files added to the folder inherit the grant.
      *
-     * Additive, like the per-file grant: it does not hide the folder from anyone who
-     * can already see the library.
+     * Reapplied on every sync rather than only when the folder is created, because
+     * the owner can change and the folder may predate this setting being switched on.
+     * Graph accepts a repeat invite for someone who already has access, so this costs
+     * one callout and never conflicts.
      *
-     * Returns a short note for the sync status, or blank when nothing was attempted.
+     * Additive: it does not hide the folder from anyone who can already see the
+     * library. Returns a short note for the sync status, or blank on success.
      */
-    private static String grantOwnerFolderAccess(Map<String, Object> createdFolder, Id recordId) {
-        if (createdFolder == null) {
-            return null;
-        }
+    private static String grantOwnerFolderAccess(String folderPath, Id recordId) {
         SharePoint_Setting__mdt cfg = SharePointConfig.get();
         if (cfg.Grant_Owner_Folder_Access__c != true) {
             return null;
         }
-        String folderId = (String) createdFolder.get('id');
-        if (String.isBlank(folderId)) {
-            return null;
-        }
-
         String ownerEmail = resolveOwnerEmail(recordId);
         if (String.isBlank(ownerEmail)) {
             return '(no owner email for folder access)';
         }
         try {
-            SharePointService.grantAccess(folderId, ownerEmail, cfg.Owner_Access_Role__c);
+            SharePointService.grantAccessByPath(folderPath, ownerEmail, cfg.Owner_Access_Role__c);
             return null;
         } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'Folder created but owner access not granted: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, 'Folder synced but owner access not granted: ' + e.getMessage());
             return '(folder access grant failed)';
         }
     }
