@@ -1,0 +1,9 @@
+String NC = 'callout:Sharepoint_Named_Credential';
+String driveId = 'PASTE_DRIVE_ID';
+
+HttpRequest r = new HttpRequest();
+r.setEndpoint(NC + '/drives/' + driveId + '/root/children');
+r.setMethod('GET');
+HttpResponse res = new Http().send(r);
+System.debug('3. GET root children -> ' + res.getStatusCode());
+System.debug(JSON.serializePretty(JSON.deserializeUntyped(res.getBody())));
