@@ -1,0 +1,35 @@
+String NC = 'callout:Sharepoint_Named_Credential';
+String SITE = '/sites/bankunited.sharepoint.com:/sites/WB:';
+
+void log(String label, HttpRequest req, HttpResponse res) {
+    System.debug('\n===== ' + label + ' =====');
+    System.debug('REQUEST:  ' + req.getMethod() + ' ' + req.getEndpoint());
+    if (req.getBody() != null && req.getBody().length() < 2000) {
+        System.debug('BODY:     ' + req.getBody());
+    }
+    System.debug('STATUS:   ' + res.getStatusCode());
+    String body = res.getBody();
+    try {
+        System.debug('RESPONSE:\n' + JSON.serializePretty(JSON.deserializeUntyped(body)));
+    } catch (Exception e) {
+        System.debug('RESPONSE: ' + body);
+    }
+}
+
+// 1. Resolve the site
+HttpRequest r = new HttpRequest();
+r.setEndpoint(NC + SITE.removeEnd(':'));
+r.setMethod('GET');
+log('1. GET site', r, new Http().send(r));
+
+// 2. List document libraries
+r = new HttpRequest();
+r.setEndpoint(NC + SITE + '/drives');
+r.setMethod('GET');
+log('2. GET drives', r, new Http().send(r));
+
+// 3. List folder contents
+r = new HttpRequest();
+r.setEndpoint(NC + SITE + '/drive/root/children');
+r.setMethod('GET');
+log('3. GET root children', r, new Http().send(r));
