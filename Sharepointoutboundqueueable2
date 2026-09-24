@@ -75,6 +75,7 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
         String itemId = (String) driveItem.get('id');
 
         String folderNote = grantOwnerFolderAccess(folderPath, item.linkedEntityId);
+        String linkNote = writeFolderUrlToRecord(upload.createdFolder, folderPath, item.linkedEntityId);
 
         // SharePoint renames rather than overwrites on a name clash, so the stored name
         // can differ from the Salesforce one. Record the real name, not the requested one.
@@ -97,6 +98,9 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
         }
         if (String.isNotBlank(folderNote)) {
             status += ' ' + folderNote;
+        }
+        if (String.isNotBlank(linkNote)) {
+            status += ' ' + linkNote;
         }
         recordStatus(item.contentDocumentId, webUrl, status);
     }
@@ -183,6 +187,67 @@ public class SharePointOutboundQueueable implements Queueable, Database.AllowsCa
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Folder synced but owner access not granted: ' + e.getMessage());
             return '(folder access grant failed)';
+        }
+    }
+
+    /**
+     * Writes the record folder's SharePoint URL onto the record itself, into the field
+     * named in custom metadata (SharePoint_Folder__c on Opportunity).
+     *
+     * Only writes when the field is currently blank, so a user who has edited the link
+     * by hand is not overwritten, and so the common case costs no callout at all. When
+     * the folder already existed and the field is empty, the URL is fetched by path,
+     * which makes this self-healing for records synced before the field was added.
+     *
+     * The field is optional: an object without it is skipped rather than erroring.
+     */
+    private static String writeFolderUrlToRecord(Map<String, Object> createdFolder, String folderPath, Id recordId) {
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+        String fieldName = cfg.Record_Folder_URL_Field__c;
+        if (String.isBlank(fieldName)) {
+            return null;
+        }
+        fieldName = fieldName.trim();
+
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        Schema.SObjectField field = describe.fields.getMap().get(fieldName);
+        if (field == null) {
+            return null;
+        }
+        if (!field.getDescribe().isUpdateable()) {
+            return '(no edit access to ' + fieldName + ')';
+        }
+
+        try {
+            List<SObject> records = Database.query(
+                'SELECT ' + fieldName + ' FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1');
+            if (records.isEmpty()) {
+                return null;
+            }
+            Object existing = records[0].get(fieldName);
+            if (existing != null && String.isNotBlank(String.valueOf(existing))) {
+                return null;
+            }
+
+            String folderUrl;
+            if (createdFolder != null) {
+                folderUrl = (String) createdFolder.get('webUrl');
+            } else {
+                Map<String, Object> folder = SharePointService.getItemByPath(folderPath);
+                folderUrl = folder == null ? null : (String) folder.get('webUrl');
+            }
+            if (String.isBlank(folderUrl)) {
+                return null;
+            }
+
+            SObject toUpdate = recordId.getSObjectType().newSObject(recordId);
+            toUpdate.put(fieldName, folderUrl);
+            update toUpdate;
+            return null;
+
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Could not write the folder link to ' + fieldName + ': ' + e.getMessage());
+            return '(folder link not saved)';
         }
     }
 
