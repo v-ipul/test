@@ -1,0 +1,33 @@
+String NC = 'callout:Sharepoint_Named_Credential';
+String driveId = 'PASTE_DRIVE_ID';
+
+// 4. Upload
+HttpRequest up = new HttpRequest();
+up.setEndpoint(NC + '/drives/' + driveId +
+    '/root:/_docs-sample.txt:/content?@microsoft.graph.conflictBehavior=rename');
+up.setMethod('PUT');
+up.setHeader('Content-Type', 'application/octet-stream');
+up.setBodyAsBlob(Blob.valueOf('sample'));
+HttpResponse upRes = new Http().send(up);
+System.debug('4. PUT upload -> ' + upRes.getStatusCode());
+System.debug(JSON.serializePretty(JSON.deserializeUntyped(upRes.getBody())));
+
+String itemId = (String) ((Map<String,Object>) JSON.deserializeUntyped(upRes.getBody())).get('id');
+
+// 5. Stamp columns
+HttpRequest patch = new HttpRequest();
+patch.setEndpoint(NC + '/drives/' + driveId + '/items/' + itemId + '/listItem/fields');
+patch.setMethod('PATCH');
+patch.setHeader('Content-Type', 'application/json');
+patch.setBody('{"Salesforce_x0020_Name":"_docs-sample.txt","SFID":"you@bankunited.com"}');
+HttpResponse pRes = new Http().send(patch);
+System.debug('5. PATCH columns -> ' + pRes.getStatusCode());
+System.debug(pRes.getBody());
+
+// 6. Version history
+HttpRequest v = new HttpRequest();
+v.setEndpoint(NC + '/drives/' + driveId + '/items/' + itemId + '/versions');
+v.setMethod('GET');
+HttpResponse vRes = new Http().send(v);
+System.debug('6. GET versions -> ' + vRes.getStatusCode());
+System.debug(JSON.serializePretty(JSON.deserializeUntyped(vRes.getBody())));
