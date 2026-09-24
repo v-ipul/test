@@ -294,6 +294,27 @@ public with sharing class SharePointService {
     }
 
     /**
+     * Metadata for a folder or file addressed by path. Returns null when it does not
+     * exist, because "not there yet" is an ordinary answer here rather than a failure.
+     */
+    public static Map<String, Object> getItemByPath(String path) {
+        if (String.isBlank(path)) {
+            return null;
+        }
+        String url = driveBase() + '/root:/' + encodePath(path);
+        HttpResponse res = send('GET', url, null, null, 'application/json');
+
+        if (res.getStatusCode() == 404) {
+            return null;
+        }
+        if (res.getStatusCode() != 200) {
+            throw new SharePointException('Could not read "' + path + '" (HTTP ' +
+                res.getStatusCode() + '): ' + truncate(res.getBody()));
+        }
+        return (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+    }
+
+    /**
      * Writes the library's custom columns on an uploaded file. Keys must be the
      * column's internal name, not its display name.
      */
