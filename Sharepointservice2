@@ -310,20 +310,40 @@ public with sharing class SharePointService {
     }
 
     /**
+     * Same as grantAccess, but addresses the folder by its path instead of an item id.
+     * That means the caller does not have to look the folder up first, so the grant can
+     * be reapplied on every sync rather than only when the folder is created.
+     */
+    public static void grantAccessByPath(String folderPath, String email, String role) {
+        if (String.isBlank(folderPath) || String.isBlank(email)) {
+            return;
+        }
+        String url = driveBase() + '/root:/' + encodePath(folderPath) + ':/invite';
+        invite(url, email, role);
+    }
+
+    /**
      * Grants one person access to a single file.
      *
      * This is ADDITIVE. The file still inherits the library's permissions, so everyone
      * who could already see the library can still see it — this only adds the named
      * person on top. Making a file exclusive requires breaking role inheritance, which
      * Graph does not expose and which needs Full Control on the site.
-     *
-     * sendInvitation=false keeps SharePoint from emailing the person; requireSignIn
-     * ties the grant to their identity rather than issuing an anonymous link.
      */
     public static void grantAccess(String itemId, String email, String role) {
         if (String.isBlank(itemId) || String.isBlank(email)) {
             return;
         }
+        invite(driveBase() + '/items/' + encodeSegment(itemId) + '/invite', email, role);
+    }
+
+    /**
+     * sendInvitation=false keeps SharePoint from emailing the person; requireSignIn
+     * ties the grant to their identity rather than issuing an anonymous link.
+     * Re-inviting someone who already has access is accepted, not an error, which is
+     * what makes this safe to call on every sync.
+     */
+    private static void invite(String url, String email, String role) {
         String cleanEmail = normaliseEmail(email);
         String effectiveRole = String.isBlank(role) ? 'read' : role.trim().toLowerCase();
 
@@ -334,7 +354,6 @@ public with sharing class SharePointService {
             'roles' => new List<String>{ effectiveRole }
         };
 
-        String url = driveBase() + '/items/' + encodeSegment(itemId) + '/invite';
         HttpResponse res = send('POST', url, Blob.valueOf(JSON.serialize(payload)), 'application/json', 'application/json');
 
         if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
