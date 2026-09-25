@@ -1,0 +1,21 @@
+Quick note on one constraint in the SharePoint POC, and what I'd suggest we do about it.
+
+The constraint
+
+Files attached to an Opportunity sync to SharePoint automatically. This works reliably up to about 6MB per file. Above that, Salesforce's own platform limits stop the transfer.
+
+The reason: Salesforce gives each background process a fixed 12MB working area. To send a file, our code has to hold the file in that space twice - once reading it out of Salesforce, once packaging it for SharePoint - and the format used for transmission makes files roughly a third larger. A 6MB document therefore needs around 16MB of a 12MB allowance.
+
+This is a platform limit that applies to every Salesforce customer. It isn't something we can tune around in code.
+
+What happens today
+
+Files above the limit are not lost. They stay in Salesforce as normal, and we record against each one that it wasn't copied to SharePoint and why. Nothing fails silently, and users aren't blocked from attaching documents.
+
+What I'd suggest
+
+Before we invest in a workaround, I'd like to measure how often this actually bites. I can report after a few weeks of real use exactly how many Wholesale Banking documents exceeded the limit and what they were. That turns this from a hypothetical into a number.
+
+If it turns out to be a real problem, there are two routes:
+
+1. Upload directly from the browser to SharePoint, bypassing the limit entirely. Handles files of 50MB and above. The trade-off is that it only covers files uploaded through our custom component, so users would have two ways to add a document and we'd need to explain the difference. Roughly [X] days of work.
