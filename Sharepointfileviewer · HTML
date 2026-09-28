@@ -21,11 +21,14 @@
                 <ul class="slds-has-dividers_bottom-space">
                     <template for:each={decoratedFiles} for:item="file">
                         <li key={file.id} class="slds-item slds-p-vertical_x-small">
-                            <div class="slds-grid slds-grid_vertical-align-center slds-wrap">
+                            <div class="slds-grid slds-grid_vertical-align-start slds-wrap">
                                 <div class="slds-col slds-size_1-of-2">
-                                    <div class="slds-text-body_regular">{file.name}</div>
+                                    <div class="slds-text-body_regular slds-truncate" title={file.name}>{file.name}</div>
                                     <div class="slds-text-body_small slds-text-color_weak">
-                                        {file.sizeLabel} &middot; modified {file.modifiedLabel}
+                                        {file.sizeLabel} &middot; {file.modifiedLabel}
+                                    </div>
+                                    <div class="slds-text-body_small slds-text-color_weak">
+                                        Uploaded by {file.uploadedByLabel}
                                     </div>
                                 </div>
                                 <div class="slds-col slds-size_1-of-2 slds-text-align_right">
@@ -51,25 +54,27 @@
                                         <lightning-spinner alternative-text="Loading versions" size="x-small"></lightning-spinner>
                                     </template>
 
-                                    <template for:each={decoratedVersions} for:item="version">
-                                        <div key={version.id} class="slds-grid slds-grid_vertical-align-center slds-wrap slds-p-vertical_xx-small">
-                                            <div class="slds-col slds-size_1-of-2">
-                                                <span class="slds-text-body_small">
-                                                    v{version.id} &middot; {version.sizeLabel}
-                                                </span>
-                                                <div class="slds-text-body_small slds-text-color_weak">
-                                                    {version.modifiedLabel} &middot; {version.lastModifiedBy}
-                                                </div>
-                                            </div>
-                                            <div class="slds-col slds-size_1-of-2 slds-text-align_right">
-                                                <lightning-button
-                                                    variant="base"
-                                                    label="Copy to Salesforce"
-                                                    data-version={version.id}
-                                                    onclick={handleRestore}>
-                                                </lightning-button>
-                                            </div>
-                                        </div>
+                                    <template lwc:if={hasVersions}>
+                                        <table class="slds-table slds-table_cell-buffer slds-no-row-hover">
+                                            <thead>
+                                                <tr class="slds-line-height_reset">
+                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Version</div></th>
+                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Modified</div></th>
+                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Modified by</div></th>
+                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Size</div></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <template for:each={decoratedVersions} for:item="version">
+                                                    <tr key={version.id} class="slds-hint-parent">
+                                                        <td><div class="slds-truncate">v{version.id}</div></td>
+                                                        <td><div class="slds-truncate">{version.modifiedLabel}</div></td>
+                                                        <td><div class="slds-truncate" title={version.modifiedByLabel}>{version.modifiedByLabel}</div></td>
+                                                        <td><div class="slds-truncate">{version.sizeLabel}</div></td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
                                     </template>
                                 </div>
                             </template>
