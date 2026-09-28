@@ -10,3 +10,14 @@ Two new metadata fields — Grant_Owner_Folder_Access__c (Checkbox), Owner_Acces
 SELECT Id, Name, Status, CreatedBy.Name, CreatedDate, LastModifiedBy.Name, LastModifiedDate
 FROM ApexClass
 ORDER BY Name
+
+
+One required Setup step
+
+Setup → CSP Trusted Sites → New:
+
+Trusted Site Name: SharePoint_Upload
+URL: https://bankunited.sharepoint.com
+Active: checked
+Context: All
+Under "CSP Directives", tick connect-src
