@@ -207,9 +207,21 @@ public with sharing class SharePointService {
     }
 
     public static List<Object> listChildren(String folderPath) {
+        return listChildren(folderPath, false);
+    }
+
+    /**
+     * withListItemFields expands each child's SharePoint column values in the same
+     * callout, so the Salesforce uploader can be shown without a second round trip.
+     */
+    public static List<Object> listChildren(String folderPath, Boolean withListItemFields) {
         String url = String.isBlank(folderPath)
             ? driveBase() + '/root/children'
             : driveBase() + '/root:/' + encodePath(folderPath) + ':/children';
+
+        if (withListItemFields == true) {
+            url += '?$expand=listItem($expand=fields)';
+        }
 
         HttpResponse res = send('GET', url, null, null, 'application/json');
         if (res.getStatusCode() != 200) {
