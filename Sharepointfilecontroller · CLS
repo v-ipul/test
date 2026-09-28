@@ -55,7 +55,7 @@ public with sharing class SharePointFileController {
                 v.size = toLong(raw.get('size'));
                 versions.add(v);
             }
-            return collapseMetadataVersions(versions);
+            return renumber(collapseMetadataVersions(versions));
         } catch (Exception e) {
             throw buildException(e.getMessage());
         }
@@ -90,6 +90,28 @@ public with sharing class SharePointFileController {
             }
         }
         return collapsed;
+    }
+
+    /**
+     * SharePoint's own version numbers count the metadata writes that the integration
+     * makes, so a file uploaded once from Salesforce is numbered 2.0 there. After the
+     * metadata versions are collapsed, the remaining ones are renumbered from 1.0 so the
+     * count matches what a Salesforce user actually did.
+     *
+     * The SharePoint number is kept in sharePointVersionId, because it is the value
+     * needed to talk to Graph about a specific version and the value a SharePoint
+     * administrator will see.
+     */
+    @TestVisible
+    private static List<VersionMetadata> renumber(List<VersionMetadata> versions) {
+        // Graph returns newest first; number from the oldest upwards.
+        Integer counter = versions.size();
+        for (VersionMetadata v : versions) {
+            v.sharePointVersionId = v.id;
+            v.id = String.valueOf(counter) + '.0';
+            counter--;
+        }
+        return versions;
     }
 
     private static Long secondsBetween(String isoA, String isoB) {
@@ -229,6 +251,7 @@ public with sharing class SharePointFileController {
 
     public class VersionMetadata {
         @AuraEnabled public String id;
+        @AuraEnabled public String sharePointVersionId;
         @AuraEnabled public String lastModifiedDateTime;
         @AuraEnabled public Long size;
     }
