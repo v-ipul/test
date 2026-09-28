@@ -1,10 +1,20 @@
 import { LightningElement, api } from 'lwc';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import getRecordFiles from '@salesforce/apex/SharePointFileController.getRecordFiles';
+import startUpload from '@salesforce/apex/SharePointLargeFileController.startUpload';
+import finishUpload from '@salesforce/apex/SharePointLargeFileController.finishUpload';
 import getFileVersions from '@salesforce/apex/SharePointFileController.getFileVersions';
+
+// Microsoft requires every chunk except the last to be a multiple of 320 KiB.
+// 5 MB is 16 x 320 KiB.
+const CHUNK_SIZE = 5 * 1024 * 1024;
 
 export default class SharepointFileViewer extends LightningElement {
     @api recordId;
+
+    isUploading = false;
+    uploadProgress = 0;
+    uploadFileName;
 
     files = [];
     isLoading = false;
@@ -74,6 +84,88 @@ export default class SharepointFileViewer extends LightningElement {
 
     handleRefresh() {
         this.loadFiles();
+    }
+
+    handleUploadClick() {
+        this.template.querySelector('input[type="file"]').click();
+    }
+
+    /**
+     * Sends the file from the browser straight to SharePoint in chunks. The bytes never
+     * pass through Apex, so the heap limit that caps the automatic sync does not apply.
+     */
+    async handleFileChosen(event) {
+        const input = event.target;
+        const file = input.files && input.files[0];
+        if (!file) {
+            return;
+        }
+
+        this.isUploading = true;
+        this.uploadProgress = 0;
+        this.uploadFileName = file.name;
+        this.errorMessage = undefined;
+
+        try {
+            const session = await startUpload({ recordId: this.recordId, fileName: file.name });
+            const driveItem = await this.sendChunks(session.uploadUrl, file);
+
+            const problems = await finishUpload({
+                recordId: this.recordId,
+                itemId: driveItem.id,
+                fileName: driveItem.name
+            });
+
+            if (problems) {
+                this.toast('Uploaded with warnings', `${driveItem.name} is in SharePoint, but ${problems}.`, 'warning');
+            } else {
+                this.toast('Uploaded', `${driveItem.name} was uploaded to SharePoint.`, 'success');
+            }
+            await this.loadFiles();
+
+        } catch (error) {
+            this.errorMessage = this.reduceError(error);
+            this.toast('Upload failed', this.errorMessage, 'error');
+        } finally {
+            this.isUploading = false;
+            this.uploadProgress = 0;
+            this.uploadFileName = undefined;
+            // Lets the same file be chosen again after a failure.
+            input.value = null;
+        }
+    }
+
+    async sendChunks(uploadUrl, file) {
+        let driveItem;
+
+        for (let start = 0; start < file.size; start += CHUNK_SIZE) {
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = file.slice(start, end);
+
+            // No Authorization header: the upload URL is already pre-authenticated and
+            // Microsoft rejects the request if one is attached.
+            const response = await fetch(uploadUrl, {
+                method: 'PUT',
+                headers: {
+                    'Content-Range': `bytes ${start}-${end - 1}/${file.size}`
+                },
+                body: chunk
+            });
+
+            if (response.status === 200 || response.status === 201) {
+                driveItem = await response.json();
+            } else if (response.status !== 202) {
+                const detail = await response.text();
+                throw new Error(`SharePoint rejected the upload (HTTP ${response.status}): ${detail}`);
+            }
+
+            this.uploadProgress = Math.round((end / file.size) * 100);
+        }
+
+        if (!driveItem || !driveItem.id) {
+            throw new Error('The upload finished but SharePoint did not return a file.');
+        }
+        return driveItem;
     }
 
     async handleToggleVersions(event) {
