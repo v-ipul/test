@@ -30,7 +30,7 @@ export default class SharepointFileViewer extends LightningElement {
             ...file,
             sizeLabel: this.formatSize(file.size),
             modifiedLabel: this.formatDate(file.lastModifiedDateTime),
-            uploadedByLabel: file.uploadedBy || 'Not recorded',
+            uploadedByLabel: file.uploadedByName || file.uploadedBy || 'Not recorded',
             isExpanded: file.id === this.expandedId,
             toggleLabel: file.id === this.expandedId ? 'Hide history' : 'Version history'
         }));
@@ -40,8 +40,7 @@ export default class SharepointFileViewer extends LightningElement {
         return this.versions.map((version) => ({
             ...version,
             sizeLabel: this.formatSize(version.size),
-            modifiedLabel: this.formatDate(version.lastModifiedDateTime),
-            modifiedByLabel: version.lastModifiedBy || 'Unknown'
+            modifiedLabel: this.formatDate(version.lastModifiedDateTime)
         }));
     }
 
