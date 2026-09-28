@@ -1,16 +1,35 @@
 <template>
     <lightning-card title="SharePoint files" icon-name="doctype:folder">
-        <lightning-button-icon
-            slot="actions"
-            icon-name="utility:refresh"
-            alternative-text="Refresh"
-            title="Refresh"
-            onclick={handleRefresh}>
-        </lightning-button-icon>
+        <div slot="actions">
+            <lightning-button
+                label="Upload to SharePoint"
+                icon-name="utility:upload"
+                onclick={handleUploadClick}
+                disabled={isUploading}>
+            </lightning-button>
+            <lightning-button-icon
+                class="slds-p-left_x-small"
+                icon-name="utility:refresh"
+                alternative-text="Refresh"
+                title="Refresh"
+                onclick={handleRefresh}>
+            </lightning-button-icon>
+        </div>
+
+        <input type="file" class="sp-hidden-file-input" onchange={handleFileChosen} />
 
         <div class="slds-p-horizontal_medium sp-body">
             <template lwc:if={isLoading}>
                 <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+            </template>
+
+            <template lwc:if={isUploading}>
+                <div class="slds-p-bottom_small">
+                    <p class="slds-text-body_small slds-p-bottom_xx-small">
+                        Uploading {uploadFileName}
+                    </p>
+                    <lightning-progress-bar value={uploadProgress} size="small"></lightning-progress-bar>
+                </div>
             </template>
 
             <template lwc:if={errorMessage}>
