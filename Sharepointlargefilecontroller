@@ -1,0 +1,262 @@
+/**
+ * Supports uploading large files straight from the browser to SharePoint.
+ *
+ * The file never passes through Apex, so the 12 MB asynchronous heap limit that caps
+ * the normal sync at roughly 6 MB does not apply here. Apex only asks SharePoint for a
+ * one-time upload address, then does the follow-up work once the browser reports the
+ * upload finished.
+ *
+ * Nothing in this class modifies the existing sync classes. It reads configuration
+ * through SharePointConfig and reuses the public methods on SharePointService and
+ * SharePointOutboundQueueable.
+ *
+ * NOTE: a file uploaded this way lands in SharePoint only. It is not stored in
+ * Salesforce, because a file above the heap limit cannot be written through Apex either.
+ */
+public with sharing class SharePointLargeFileController {
+
+    public class LargeUploadException extends Exception {}
+
+    /**
+     * Asks SharePoint for an upload session. The returned uploadUrl is pre-authenticated
+     * and short lived: the browser PUTs to it directly and must NOT attach an
+     * Authorization header.
+     */
+    @AuraEnabled
+    public static UploadSession startUpload(Id recordId, String fileName) {
+        if (recordId == null) {
+            throw buildException('This component has to be placed on a record page.');
+        }
+        if (String.isBlank(fileName)) {
+            throw buildException('No file name was supplied.');
+        }
+        try {
+            String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
+            String safeName = SharePointService.sanitize(fileName);
+
+            String url = driveBase() + '/root:/' + encodePath(folderPath) + '/' +
+                         encodeSegment(safeName) + ':/createUploadSession';
+
+            Map<String, Object> payload = new Map<String, Object>{
+                'item' => new Map<String, Object>{
+                    '@microsoft.graph.conflictBehavior' => 'rename'
+                }
+            };
+
+            HttpResponse res = send('POST', url, JSON.serialize(payload));
+
+            // The folder does not exist until the record's first sync, so create it and retry.
+            if (res.getStatusCode() == 404) {
+                SharePointService.ensureFolder(folderPath);
+                res = send('POST', url, JSON.serialize(payload));
+            }
+            if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
+                throw new LargeUploadException('Could not start the upload (HTTP ' +
+                    res.getStatusCode() + '): ' + res.getBody());
+            }
+
+            Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+
+            UploadSession session = new UploadSession();
+            session.uploadUrl = (String) body.get('uploadUrl');
+            session.expirationDateTime = (String) body.get('expirationDateTime');
+            session.fileName = safeName;
+            session.folderPath = folderPath;
+            return session;
+
+        } catch (Exception e) {
+            throw buildException(e.getMessage());
+        }
+    }
+
+    /**
+     * Called by the component once the last chunk has been accepted. Applies the same
+     * follow-up steps the normal sync applies: the library columns, the owner grant, and
+     * the folder link on the record.
+     *
+     * Each step is guarded. The file is already safely in SharePoint by this point, so a
+     * failure here is reported rather than treated as an upload failure.
+     */
+    @AuraEnabled
+    public static String finishUpload(Id recordId, String itemId, String fileName) {
+        if (recordId == null || String.isBlank(itemId)) {
+            throw buildException('The upload did not return a SharePoint item.');
+        }
+        List<String> problems = new List<String>();
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+
+        // 1. Library columns
+        try {
+            Map<String, Object> fields = new Map<String, Object>();
+            if (String.isNotBlank(cfg.Column_File_Name__c)) {
+                fields.put(cfg.Column_File_Name__c.trim(), fileName);
+            }
+            if (String.isNotBlank(cfg.Column_Uploaded_By__c)) {
+                fields.put(cfg.Column_Uploaded_By__c.trim(), UserInfo.getUserEmail());
+            }
+            SharePointService.setListItemFields(itemId, fields);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Columns not set: ' + e.getMessage());
+            problems.add('columns not set');
+        }
+
+        // 2. Owner access to the record folder
+        if (cfg.Grant_Owner_Folder_Access__c == true) {
+            try {
+                String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
+                String ownerEmail = resolveOwnerEmail(recordId);
+                if (String.isNotBlank(ownerEmail)) {
+                    SharePointService.grantAccessByPath(folderPath, ownerEmail, cfg.Owner_Access_Role__c);
+                }
+            } catch (Exception e) {
+                System.debug(LoggingLevel.ERROR, 'Owner access not granted: ' + e.getMessage());
+                problems.add('owner access not granted');
+            }
+        }
+
+        // 3. Folder link on the record
+        try {
+            writeFolderUrl(recordId, cfg.Record_Folder_URL_Field__c);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Folder link not saved: ' + e.getMessage());
+            problems.add('folder link not saved');
+        }
+
+        return problems.isEmpty() ? null : String.join(problems, ', ');
+    }
+
+    /**
+     * Duplicated from the queueable, whose copy is private. OwnerId can point at a Queue
+     * on some objects, so the type is checked before the User is read.
+     */
+    @TestVisible
+    private static String resolveOwnerEmail(Id recordId) {
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        if (!describe.fields.getMap().containsKey('OwnerId') || !describe.isAccessible()) {
+            return null;
+        }
+        List<SObject> records = Database.query(
+            'SELECT OwnerId FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1');
+        if (records.isEmpty()) {
+            return null;
+        }
+        Id ownerId = (Id) records[0].get('OwnerId');
+        if (ownerId == null || ownerId.getSObjectType() != User.SObjectType) {
+            return null;
+        }
+        List<User> owners = [SELECT Email FROM User WHERE Id = :ownerId LIMIT 1];
+        return owners.isEmpty() ? null : owners[0].Email;
+    }
+
+    private static void writeFolderUrl(Id recordId, String fieldName) {
+        if (String.isBlank(fieldName)) {
+            return;
+        }
+        fieldName = fieldName.trim();
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        Schema.SObjectField field = describe.fields.getMap().get(fieldName);
+        if (field == null || !field.getDescribe().isUpdateable()) {
+            return;
+        }
+
+        List<SObject> records = Database.query(
+            'SELECT ' + fieldName + ' FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1');
+        if (records.isEmpty()) {
+            return;
+        }
+        Object existing = records[0].get(fieldName);
+        if (existing != null && String.isNotBlank(String.valueOf(existing))) {
+            return;
+        }
+
+        Map<String, Object> folder = SharePointService.getItemByPath(
+            SharePointOutboundQueueable.buildFolderPath(recordId));
+        if (folder == null || String.isBlank((String) folder.get('webUrl'))) {
+            return;
+        }
+        SObject toUpdate = recordId.getSObjectType().newSObject(recordId);
+        toUpdate.put(fieldName, (String) folder.get('webUrl'));
+        update toUpdate;
+    }
+
+    /**
+     * Builds the drive base independently of SharePointService, whose equivalent method
+     * is private. This is deliberate duplication so that adding large file upload
+     * required no edit to the existing sync classes.
+     */
+    @TestVisible
+    private static String cachedDriveBase;
+
+    private static String driveBase() {
+        if (cachedDriveBase != null) {
+            return cachedDriveBase;
+        }
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+        String siteBase = 'callout:' + cfg.Named_Credential__c +
+                          '/sites/' + cfg.Site_Hostname__c +
+                          ':/sites/' + cfg.Site_Path__c + ':';
+
+        if (String.isBlank(cfg.Drive_Name__c)) {
+            cachedDriveBase = siteBase + '/drive';
+            return cachedDriveBase;
+        }
+
+        HttpResponse res = send('GET', siteBase + '/drives', null);
+        if (res.getStatusCode() != 200) {
+            throw new LargeUploadException('Could not list document libraries (HTTP ' +
+                res.getStatusCode() + '): ' + res.getBody());
+        }
+        Map<String, Object> parsed = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+        for (Object entry : (List<Object>) parsed.get('value')) {
+            Map<String, Object> drive = (Map<String, Object>) entry;
+            String name = (String) drive.get('name');
+            if (name != null && name.equalsIgnoreCase(cfg.Drive_Name__c.trim())) {
+                cachedDriveBase = 'callout:' + cfg.Named_Credential__c + '/drives/' + drive.get('id');
+                return cachedDriveBase;
+            }
+        }
+        throw new LargeUploadException('Document library "' + cfg.Drive_Name__c + '" was not found.');
+    }
+
+    private static HttpResponse send(String method, String url, String body) {
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint(url);
+        req.setMethod(method);
+        req.setTimeout(60000);
+        req.setHeader('Accept', 'application/json');
+        if (body != null) {
+            req.setHeader('Content-Type', 'application/json');
+            req.setBody(body);
+        }
+        return new Http().send(req);
+    }
+
+    private static String encodeSegment(String segment) {
+        return EncodingUtil.urlEncode(segment, 'UTF-8').replace('+', '%20');
+    }
+
+    private static String encodePath(String path) {
+        List<String> parts = new List<String>();
+        if (String.isNotBlank(path)) {
+            for (String part : path.split('/')) {
+                if (String.isNotBlank(part)) {
+                    parts.add(encodeSegment(part));
+                }
+            }
+        }
+        return String.join(parts, '/');
+    }
+
+    private static AuraHandledException buildException(String message) {
+        AuraHandledException e = new AuraHandledException(message);
+        e.setMessage(message);
+        return e;
+    }
+
+    public class UploadSession {
+        @AuraEnabled public String uploadUrl;
+        @AuraEnabled public String expirationDateTime;
+        @AuraEnabled public String fileName;
+        @AuraEnabled public String folderPath;
+    }
+}
