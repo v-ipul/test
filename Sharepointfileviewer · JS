@@ -37,8 +37,17 @@ export default class SharepointFileViewer extends LightningElement {
     }
 
     get decoratedVersions() {
+        // Versions carry no uploader of their own. Every version of a file synced by this
+        // integration was written by the same Salesforce user, so the file's recorded
+        // uploader is shown against each row.
+        const parent = this.files.find((f) => f.id === this.expandedId);
+        const uploadedByLabel = parent
+            ? parent.uploadedByName || parent.uploadedBy || 'Not recorded'
+            : 'Not recorded';
+
         return this.versions.map((version) => ({
             ...version,
+            uploadedByLabel,
             sizeLabel: this.formatSize(version.size),
             modifiedLabel: this.formatDate(version.lastModifiedDateTime)
         }));
