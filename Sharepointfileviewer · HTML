@@ -59,8 +59,7 @@
                                             <thead>
                                                 <tr class="slds-line-height_reset">
                                                     <th scope="col"><div class="slds-truncate slds-text-title_caps">Version</div></th>
-                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Modified</div></th>
-                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Modified by</div></th>
+                                                    <th scope="col"><div class="slds-truncate slds-text-title_caps">Date</div></th>
                                                     <th scope="col"><div class="slds-truncate slds-text-title_caps">Size</div></th>
                                                 </tr>
                                             </thead>
@@ -69,7 +68,6 @@
                                                     <tr key={version.id} class="slds-hint-parent">
                                                         <td><div class="slds-truncate">v{version.id}</div></td>
                                                         <td><div class="slds-truncate">{version.modifiedLabel}</div></td>
-                                                        <td><div class="slds-truncate" title={version.modifiedByLabel}>{version.modifiedByLabel}</div></td>
                                                         <td><div class="slds-truncate">{version.sizeLabel}</div></td>
                                                     </tr>
                                                 </template>
