@@ -1,9 +1,7 @@
 import { LightningElement, api } from 'lwc';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
-import { RefreshEvent } from 'lightning/refresh';
 import getRecordFiles from '@salesforce/apex/SharePointFileController.getRecordFiles';
 import getFileVersions from '@salesforce/apex/SharePointFileController.getFileVersions';
-import restoreVersionToRecord from '@salesforce/apex/SharePointFileController.restoreVersionToRecord';
 
 export default class SharepointFileViewer extends LightningElement {
     @api recordId;
@@ -32,6 +30,7 @@ export default class SharepointFileViewer extends LightningElement {
             ...file,
             sizeLabel: this.formatSize(file.size),
             modifiedLabel: this.formatDate(file.lastModifiedDateTime),
+            uploadedByLabel: file.uploadedBy || 'Not recorded',
             isExpanded: file.id === this.expandedId,
             toggleLabel: file.id === this.expandedId ? 'Hide history' : 'Version history'
         }));
@@ -41,14 +40,20 @@ export default class SharepointFileViewer extends LightningElement {
         return this.versions.map((version) => ({
             ...version,
             sizeLabel: this.formatSize(version.size),
-            modifiedLabel: this.formatDate(version.lastModifiedDateTime)
+            modifiedLabel: this.formatDate(version.lastModifiedDateTime),
+            modifiedByLabel: version.lastModifiedBy || 'Unknown'
         }));
+    }
+
+    get hasVersions() {
+        return !this.versionsLoading && this.versions.length > 0;
     }
 
     async loadFiles() {
         this.isLoading = true;
         this.errorMessage = undefined;
         this.expandedId = undefined;
+        this.versions = [];
         try {
             this.files = await getRecordFiles({ recordId: this.recordId });
         } catch (error) {
@@ -80,6 +85,7 @@ export default class SharepointFileViewer extends LightningElement {
             this.versions = await getFileVersions({ itemId: fileId });
         } catch (error) {
             this.errorMessage = this.reduceError(error);
+            this.toast('Could not load history', this.errorMessage, 'error');
             this.expandedId = undefined;
         } finally {
             this.versionsLoading = false;
@@ -90,35 +96,6 @@ export default class SharepointFileViewer extends LightningElement {
         const url = event.currentTarget.dataset.url;
         if (url) {
             window.open(url, '_blank', 'noopener');
-        }
-    }
-
-    async handleRestore(event) {
-        const versionId = event.currentTarget.dataset.version;
-        const file = this.files.find((f) => f.id === this.expandedId);
-        if (!file) {
-            return;
-        }
-
-        this.versionsLoading = true;
-        try {
-            await restoreVersionToRecord({
-                itemId: file.id,
-                versionId,
-                fileName: file.name,
-                recordId: this.recordId
-            });
-            this.toast(
-                'Version restored',
-                `${file.name} version ${versionId} was added to this record as a Salesforce file.`,
-                'success'
-            );
-            this.dispatchEvent(new RefreshEvent());
-        } catch (error) {
-            this.errorMessage = this.reduceError(error);
-            this.toast('Restore failed', this.errorMessage, 'error');
-        } finally {
-            this.versionsLoading = false;
         }
     }
 
@@ -141,7 +118,16 @@ export default class SharepointFileViewer extends LightningElement {
             return '';
         }
         const parsed = new Date(isoString);
-        return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString();
+        if (Number.isNaN(parsed.getTime())) {
+            return '';
+        }
+        return parsed.toLocaleString(undefined, {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
     }
 
     reduceError(error) {
