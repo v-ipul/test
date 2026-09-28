@@ -27,6 +27,7 @@ public with sharing class SharePointFileController {
                 }
                 files.add(toMetadata(item));
             }
+            resolveUploaderNames(files);
             return files;
         } catch (SharePointService.SharePointException e) {
             if (e.getMessage().contains('404') || e.getMessage().containsIgnoreCase('itemNotFound')) {
@@ -52,13 +53,100 @@ public with sharing class SharePointFileController {
                 v.id = (String) raw.get('id');
                 v.lastModifiedDateTime = (String) raw.get('lastModifiedDateTime');
                 v.size = toLong(raw.get('size'));
-                v.lastModifiedBy = displayName(raw.get('lastModifiedBy'));
                 versions.add(v);
             }
-            return versions;
+            return collapseMetadataVersions(versions);
         } catch (Exception e) {
             throw buildException(e.getMessage());
         }
+    }
+
+    /**
+     * One Salesforce upload produces two SharePoint versions: the file content creates
+     * one, and writing the SF Name and SF ID columns immediately afterwards creates
+     * another, because SharePoint versions a metadata change like any other change.
+     *
+     * Both versions hold identical content, so showing both is misleading. Versions of
+     * the same size recorded within two minutes of each other are treated as one, and
+     * the most recent is kept.
+     *
+     * This is a display decision only. SharePoint still holds every version, and they
+     * remain visible in SharePoint itself.
+     */
+    @TestVisible
+    private static List<VersionMetadata> collapseMetadataVersions(List<VersionMetadata> versions) {
+        List<VersionMetadata> collapsed = new List<VersionMetadata>();
+
+        for (VersionMetadata current : versions) {
+            Boolean isDuplicate = false;
+
+            if (!collapsed.isEmpty()) {
+                VersionMetadata kept = collapsed[collapsed.size() - 1];
+                Long gapSeconds = secondsBetween(kept.lastModifiedDateTime, current.lastModifiedDateTime);
+                isDuplicate = kept.size == current.size && gapSeconds != null && gapSeconds <= 120;
+            }
+            if (!isDuplicate) {
+                collapsed.add(current);
+            }
+        }
+        return collapsed;
+    }
+
+    private static Long secondsBetween(String isoA, String isoB) {
+        if (String.isBlank(isoA) || String.isBlank(isoB)) {
+            return null;
+        }
+        try {
+            Datetime a = (Datetime) JSON.deserialize('"' + isoA + '"', Datetime.class);
+            Datetime b = (Datetime) JSON.deserialize('"' + isoB + '"', Datetime.class);
+            return Math.abs(a.getTime() - b.getTime()) / 1000;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The column holds the uploader's email. Users recognise names, so the matching
+     * Salesforce user is resolved and the name shown instead.
+     *
+     * Sandbox refreshes append ".invalid" to every user email, so both sides are
+     * normalised before matching.
+     */
+    private static void resolveUploaderNames(List<FileMetadata> files) {
+        Set<String> emails = new Set<String>();
+        for (FileMetadata f : files) {
+            if (String.isNotBlank(f.uploadedBy)) {
+                emails.add(normalise(f.uploadedBy));
+            }
+        }
+        if (emails.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> nameByEmail = new Map<String, String>();
+        for (User u : [SELECT Name, Email FROM User WHERE IsActive = true LIMIT 2000]) {
+            String key = normalise(u.Email);
+            if (emails.contains(key)) {
+                nameByEmail.put(key, u.Name);
+            }
+        }
+        for (FileMetadata f : files) {
+            if (String.isNotBlank(f.uploadedBy)) {
+                String name = nameByEmail.get(normalise(f.uploadedBy));
+                f.uploadedByName = String.isBlank(name) ? f.uploadedBy : name;
+            }
+        }
+    }
+
+    private static String normalise(String email) {
+        if (String.isBlank(email)) {
+            return '';
+        }
+        String trimmed = email.trim().toLowerCase();
+        while (trimmed.endsWith('.invalid')) {
+            trimmed = trimmed.substring(0, trimmed.length() - 8);
+        }
+        return trimmed;
     }
 
     private static FileMetadata toMetadata(Map<String, Object> item) {
@@ -136,12 +224,12 @@ public with sharing class SharePointFileController {
         @AuraEnabled public String lastModifiedDateTime;
         @AuraEnabled public String createdDateTime;
         @AuraEnabled public String uploadedBy;
+        @AuraEnabled public String uploadedByName;
     }
 
     public class VersionMetadata {
         @AuraEnabled public String id;
         @AuraEnabled public String lastModifiedDateTime;
         @AuraEnabled public Long size;
-        @AuraEnabled public String lastModifiedBy;
     }
 }
