@@ -1,12 +1,6 @@
 <template>
     <lightning-card title="SharePoint files" icon-name="doctype:folder">
         <div slot="actions">
-            <lightning-button
-                label="Upload to SharePoint"
-                icon-name="utility:upload"
-                onclick={handleUploadClick}
-                disabled={isUploading}>
-            </lightning-button>
             <lightning-button-icon
                 class="slds-p-left_x-small"
                 icon-name="utility:refresh"
@@ -16,7 +10,15 @@
             </lightning-button-icon>
         </div>
 
-        <input type="file" class="sp-hidden-file-input" onchange={handleFileChosen} />
+        <div class="slds-p-horizontal_medium slds-p-top_x-small">
+            <lightning-file-upload
+                label="Add a file"
+                name="sharePointUpload"
+                record-id={recordId}
+                onuploadfinished={handleSalesforceUploadFinished}
+                disabled={isUploading}>
+            </lightning-file-upload>
+        </div>
 
         <div class="slds-p-horizontal_medium sp-body">
             <template lwc:if={isLoading}>
