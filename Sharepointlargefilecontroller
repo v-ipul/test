@@ -18,6 +18,46 @@ public with sharing class SharePointLargeFileController {
     public class LargeUploadException extends Exception {}
 
     /**
+     * Details of a file the platform has just written to Salesforce.
+     *
+     * lightning-file-upload streams the file straight into Salesforce without passing
+     * through Apex, so the 12 MB heap limit does not apply on the way in. The component
+     * uses this to decide whether the normal sync will handle the file or whether it has
+     * to push it to SharePoint from the browser.
+     */
+    @AuraEnabled
+    public static UploadedFile getUploadedFile(String contentDocumentId) {
+        if (String.isBlank(contentDocumentId)) {
+            throw buildException('No file was uploaded.');
+        }
+        List<ContentVersion> versions = [
+            SELECT Id, Title, PathOnClient, FileExtension, ContentSize
+            FROM ContentVersion
+            WHERE ContentDocumentId = :contentDocumentId AND IsLatest = true
+            LIMIT 1
+        ];
+        if (versions.isEmpty()) {
+            throw buildException('The uploaded file could not be found.');
+        }
+        ContentVersion cv = versions[0];
+
+        UploadedFile result = new UploadedFile();
+        result.contentVersionId = cv.Id;
+        result.size = cv.ContentSize;
+        result.maxSyncSize = SharePointConfig.maxFileSizeBytes();
+
+        String name = String.isNotBlank(cv.PathOnClient) ? cv.PathOnClient : cv.Title;
+        if (String.isNotBlank(cv.FileExtension) && !name.toLowerCase().endsWith('.' + cv.FileExtension.toLowerCase())) {
+            name += '.' + cv.FileExtension;
+        }
+        result.fileName = name;
+
+        // Same-origin path the browser can read with the user's existing session.
+        result.downloadUrl = '/sfc/servlet.shepherd/version/download/' + cv.Id;
+        return result;
+    }
+
+    /**
      * Asks SharePoint for an upload session. The returned uploadUrl is pre-authenticated
      * and short lived: the browser PUTs to it directly and must NOT attach an
      * Authorization header.
@@ -78,7 +118,7 @@ public with sharing class SharePointLargeFileController {
      * failure here is reported rather than treated as an upload failure.
      */
     @AuraEnabled
-    public static String finishUpload(Id recordId, String itemId, String fileName, String webUrl) {
+    public static String finishUpload(Id recordId, String itemId, String fileName, String webUrl, Id contentVersionId) {
         if (recordId == null || String.isBlank(itemId)) {
             throw buildException('The upload did not return a SharePoint item.');
         }
@@ -122,22 +162,44 @@ public with sharing class SharePointLargeFileController {
             problems.add('folder link not saved');
         }
 
-        // 4. Salesforce Files entry pointing at the document
-        if (cfg.Create_Salesforce_Link__c == true) {
-            try {
+        // 4. The Salesforce copy
+        try {
+            if (contentVersionId != null) {
+                // The file is already in Salesforce Files, uploaded by the platform.
+                // Stamp it so it is traceable and so the outbound sync leaves it alone.
+                stampSalesforceCopy(contentVersionId, webUrl);
+            } else if (cfg.Create_Salesforce_Link__c == true) {
                 createSalesforceLink(recordId, fileName, webUrl);
-            } catch (Exception e) {
-                System.debug(LoggingLevel.ERROR, 'Salesforce link not created: ' + e.getMessage());
-                problems.add('not added to Salesforce Files');
             }
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Salesforce copy not updated: ' + e.getMessage());
+            problems.add('Salesforce file not updated');
         }
 
         return problems.isEmpty() ? null : String.join(problems, ', ');
     }
 
     /**
+     * Marks the Salesforce copy with the SharePoint link. The bytes are already in
+     * Salesforce, put there by the platform rather than by Apex.
+     */
+    private static void stampSalesforceCopy(Id contentVersionId, String webUrl) {
+        Boolean previousBypass = SharePointSyncBypass.disabled;
+        SharePointSyncBypass.disabled = true;
+        try {
+            update new ContentVersion(
+                Id = contentVersionId,
+                SharePoint_Item_URL__c = webUrl,
+                SharePoint_Sync_Status__c = 'Uploaded directly to SharePoint ' + Datetime.now().format()
+            );
+        } finally {
+            SharePointSyncBypass.disabled = previousBypass;
+        }
+    }
+
+    /**
      * Adds the document to the record's Salesforce Files list as a LINK rather than a
-     * copy of the bytes.
+     * copy of the bytes. Used only when no Salesforce copy exists.
      *
      * A ContentVersion with ContentUrl set instead of VersionData is a link-type file:
      * no size limit, appears in the Files related list like any other file, and opens
@@ -309,6 +371,14 @@ public with sharing class SharePointLargeFileController {
         AuraHandledException e = new AuraHandledException(message);
         e.setMessage(message);
         return e;
+    }
+
+    public class UploadedFile {
+        @AuraEnabled public Id contentVersionId;
+        @AuraEnabled public String fileName;
+        @AuraEnabled public Long size;
+        @AuraEnabled public Long maxSyncSize;
+        @AuraEnabled public String downloadUrl;
     }
 
     public class UploadSession {
