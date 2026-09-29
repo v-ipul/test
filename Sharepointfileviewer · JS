@@ -113,7 +113,8 @@ export default class SharepointFileViewer extends LightningElement {
             const problems = await finishUpload({
                 recordId: this.recordId,
                 itemId: driveItem.id,
-                fileName: driveItem.name
+                fileName: driveItem.name,
+                webUrl: driveItem.webUrl
             });
 
             if (problems) {
