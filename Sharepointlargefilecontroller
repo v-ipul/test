@@ -78,7 +78,7 @@ public with sharing class SharePointLargeFileController {
      * failure here is reported rather than treated as an upload failure.
      */
     @AuraEnabled
-    public static String finishUpload(Id recordId, String itemId, String fileName) {
+    public static String finishUpload(Id recordId, String itemId, String fileName, String webUrl) {
         if (recordId == null || String.isBlank(itemId)) {
             throw buildException('The upload did not return a SharePoint item.');
         }
@@ -122,7 +122,65 @@ public with sharing class SharePointLargeFileController {
             problems.add('folder link not saved');
         }
 
+        // 4. Salesforce Files entry pointing at the document
+        if (cfg.Create_Salesforce_Link__c == true) {
+            try {
+                createSalesforceLink(recordId, fileName, webUrl);
+            } catch (Exception e) {
+                System.debug(LoggingLevel.ERROR, 'Salesforce link not created: ' + e.getMessage());
+                problems.add('not added to Salesforce Files');
+            }
+        }
+
         return problems.isEmpty() ? null : String.join(problems, ', ');
+    }
+
+    /**
+     * Adds the document to the record's Salesforce Files list as a LINK rather than a
+     * copy of the bytes.
+     *
+     * A ContentVersion with ContentUrl set instead of VersionData is a link-type file:
+     * no size limit, appears in the Files related list like any other file, and opens
+     * the SharePoint document when clicked. Storing the bytes themselves is not possible
+     * here, because a file large enough to need a browser-direct upload is also too
+     * large for Apex to write into Salesforce.
+     *
+     * SharePoint_Item_URL__c is stamped so the outbound sync treats it as already
+     * synced, and the bypass flag stops the trigger firing on the insert.
+     */
+    private static void createSalesforceLink(Id recordId, String fileName, String webUrl) {
+        if (String.isBlank(webUrl)) {
+            throw new LargeUploadException('SharePoint did not return a link for this document.');
+        }
+        if (!Schema.SObjectType.ContentVersion.isCreateable() ||
+            !Schema.SObjectType.ContentDocumentLink.isCreateable()) {
+            throw new LargeUploadException('You do not have permission to add files to this record.');
+        }
+
+        Boolean previousBypass = SharePointSyncBypass.disabled;
+        SharePointSyncBypass.disabled = true;
+        try {
+            ContentVersion cv = new ContentVersion(
+                Title = String.isBlank(fileName) ? 'SharePoint document' : fileName,
+                ContentUrl = webUrl,
+                SharePoint_Item_URL__c = webUrl,
+                SharePoint_Sync_Status__c = 'Uploaded directly to SharePoint ' + Datetime.now().format()
+            );
+            insert cv;
+
+            Id contentDocumentId = [
+                SELECT ContentDocumentId FROM ContentVersion WHERE Id = :cv.Id LIMIT 1
+            ].ContentDocumentId;
+
+            insert new ContentDocumentLink(
+                ContentDocumentId = contentDocumentId,
+                LinkedEntityId = recordId,
+                ShareType = 'V',
+                Visibility = 'AllUsers'
+            );
+        } finally {
+            SharePointSyncBypass.disabled = previousBypass;
+        }
     }
 
     /**
