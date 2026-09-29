@@ -1,6 +1,7 @@
 import { LightningElement, api } from 'lwc';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import getRecordFiles from '@salesforce/apex/SharePointFileController.getRecordFiles';
+import getUploadedFile from '@salesforce/apex/SharePointLargeFileController.getUploadedFile';
 import startUpload from '@salesforce/apex/SharePointLargeFileController.startUpload';
 import finishUpload from '@salesforce/apex/SharePointLargeFileController.finishUpload';
 import getFileVersions from '@salesforce/apex/SharePointFileController.getFileVersions';
@@ -86,57 +87,83 @@ export default class SharepointFileViewer extends LightningElement {
         this.loadFiles();
     }
 
-    handleUploadClick() {
-        this.template.querySelector('input[type="file"]').click();
+    get acceptedFormats() {
+        return [];
     }
 
     /**
-     * Sends the file from the browser straight to SharePoint in chunks. The bytes never
-     * pass through Apex, so the heap limit that caps the automatic sync does not apply.
+     * The platform has already written the file into Salesforce Files and linked it to
+     * the record. What happens next depends on size: a file the normal sync can carry is
+     * left to it, and a larger one is pushed to SharePoint from the browser.
      */
-    async handleFileChosen(event) {
-        const input = event.target;
-        const file = input.files && input.files[0];
-        if (!file) {
+    async handleSalesforceUploadFinished(event) {
+        const uploaded = event.detail.files && event.detail.files[0];
+        if (!uploaded) {
             return;
         }
 
         this.isUploading = true;
         this.uploadProgress = 0;
-        this.uploadFileName = file.name;
         this.errorMessage = undefined;
 
         try {
-            const session = await startUpload({ recordId: this.recordId, fileName: file.name });
-            const driveItem = await this.sendChunks(session.uploadUrl, file);
+            const details = await getUploadedFile({ contentDocumentId: uploaded.documentId });
+            this.uploadFileName = details.fileName;
 
-            const problems = await finishUpload({
-                recordId: this.recordId,
-                itemId: driveItem.id,
-                fileName: driveItem.name,
-                webUrl: driveItem.webUrl
-            });
-
-            if (problems) {
-                this.toast('Uploaded with warnings', `${driveItem.name} is in SharePoint, but ${problems}.`, 'warning');
-            } else {
-                this.toast('Uploaded', `${driveItem.name} was uploaded to SharePoint.`, 'success');
+            if (Number(details.size) <= Number(details.maxSyncSize)) {
+                this.toast(
+                    'Uploaded',
+                    `${details.fileName} is in Salesforce and will sync to SharePoint shortly.`,
+                    'success'
+                );
+                await this.loadFiles();
+                return;
             }
-            await this.loadFiles();
+
+            await this.pushToSharePoint(details);
 
         } catch (error) {
             this.errorMessage = this.reduceError(error);
-            this.toast('Upload failed', this.errorMessage, 'error');
+            this.toast('SharePoint upload failed', this.errorMessage, 'error');
         } finally {
             this.isUploading = false;
             this.uploadProgress = 0;
             this.uploadFileName = undefined;
-            // Lets the same file be chosen again after a failure.
-            input.value = null;
         }
     }
 
+    /**
+     * Reads the file back out of Salesforce and sends it to SharePoint in chunks. The
+     * bytes travel browser to SharePoint directly, so no Apex heap limit applies.
+     */
+    async pushToSharePoint(details) {
+        const download = await fetch(details.downloadUrl, { credentials: 'include' });
+        if (!download.ok) {
+            throw new Error(`Could not read the file back from Salesforce (HTTP ${download.status}).`);
+        }
+        const blob = await download.blob();
+
+        const session = await startUpload({ recordId: this.recordId, fileName: details.fileName });
+        const driveItem = await this.sendChunks(session.uploadUrl, blob);
+
+        const problems = await finishUpload({
+            recordId: this.recordId,
+            itemId: driveItem.id,
+            fileName: driveItem.name,
+            webUrl: driveItem.webUrl,
+            contentVersionId: details.contentVersionId
+        });
+
+        if (problems) {
+            this.toast('Uploaded with warnings', `${driveItem.name} is in both systems, but ${problems}.`, 'warning');
+        } else {
+            this.toast('Uploaded', `${driveItem.name} is now in Salesforce and SharePoint.`, 'success');
+        }
+        await this.loadFiles();
+    }
+
     async sendChunks(uploadUrl, file) {
+        // 'file' is a Blob read back from Salesforce, sliced the same way a File is.
         let driveItem;
 
         for (let start = 0; start < file.size; start += CHUNK_SIZE) {
