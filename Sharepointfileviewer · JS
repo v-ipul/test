@@ -129,11 +129,14 @@ export default class SharepointFileViewer extends LightningElement {
                 ? 'SharePoint and Salesforce'
                 : 'SharePoint, with a link added to this record';
 
+            // The columns, owner grant and folder link are secondary. The file is safely
+            // uploaded by this point, so a problem with one of them is logged for support
+            // rather than shown to the user.
             if (problems) {
-                this.toast('Uploaded with warnings', `${driveItem.name} is in ${where}, but ${problems}.`, 'warning');
-            } else {
-                this.toast('Uploaded', `${driveItem.name} is in ${where}.`, 'success');
+                // eslint-disable-next-line no-console
+                console.warn(`SharePoint follow-up steps incomplete: ${problems}`);
             }
+            this.toast('Uploaded', `${driveItem.name} is in ${where}.`, 'success');
 
             await this.loadFiles();
             this.dispatchEvent(new RefreshEvent());
