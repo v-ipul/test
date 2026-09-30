@@ -1,28 +1,36 @@
 import { LightningElement, api } from 'lwc';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+import { RefreshEvent } from 'lightning/refresh';
 import getRecordFiles from '@salesforce/apex/SharePointFileController.getRecordFiles';
-import getUploadedFile from '@salesforce/apex/SharePointLargeFileController.getUploadedFile';
+import getFileVersions from '@salesforce/apex/SharePointFileController.getFileVersions';
+import restoreVersionToRecord from '@salesforce/apex/SharePointFileController.restoreVersionToRecord';
 import startUpload from '@salesforce/apex/SharePointLargeFileController.startUpload';
 import finishUpload from '@salesforce/apex/SharePointLargeFileController.finishUpload';
-import getFileVersions from '@salesforce/apex/SharePointFileController.getFileVersions';
+import saveToSalesforce from '@salesforce/apex/SharePointLargeFileController.saveToSalesforce';
 
 // Microsoft requires every chunk except the last to be a multiple of 320 KiB.
 // 5 MB is 16 x 320 KiB.
 const CHUNK_SIZE = 5 * 1024 * 1024;
 
+// Above this, the file cannot be passed through an Apex request, so Salesforce receives
+// a link record rather than the bytes. Base64 inflates a file by a third before it is
+// sent, so this sits well below the Apex ceiling rather than at it.
+const SALESFORCE_COPY_MAX = 3.5 * 1024 * 1024;
+
 export default class SharepointFileViewer extends LightningElement {
     @api recordId;
-
-    isUploading = false;
-    uploadProgress = 0;
-    uploadFileName;
 
     files = [];
     isLoading = false;
     errorMessage;
+
     expandedId;
     versions = [];
     versionsLoading = false;
+
+    isUploading = false;
+    uploadProgress = 0;
+    uploadFileName;
 
     connectedCallback() {
         this.loadFiles();
@@ -33,7 +41,7 @@ export default class SharepointFileViewer extends LightningElement {
     }
 
     get showEmptyState() {
-        return !this.isLoading && !this.errorMessage && !this.hasFiles;
+        return !this.isLoading && !this.isUploading && !this.errorMessage && !this.hasFiles;
     }
 
     get decoratedFiles() {
@@ -41,38 +49,23 @@ export default class SharepointFileViewer extends LightningElement {
             ...file,
             sizeLabel: this.formatSize(file.size),
             modifiedLabel: this.formatDate(file.lastModifiedDateTime),
-            uploadedByLabel: file.uploadedByName || file.uploadedBy || 'Not recorded',
             isExpanded: file.id === this.expandedId,
             toggleLabel: file.id === this.expandedId ? 'Hide history' : 'Version history'
         }));
     }
 
     get decoratedVersions() {
-        // Versions carry no uploader of their own. Every version of a file synced by this
-        // integration was written by the same Salesforce user, so the file's recorded
-        // uploader is shown against each row.
-        const parent = this.files.find((f) => f.id === this.expandedId);
-        const uploadedByLabel = parent
-            ? parent.uploadedByName || parent.uploadedBy || 'Not recorded'
-            : 'Not recorded';
-
         return this.versions.map((version) => ({
             ...version,
-            uploadedByLabel,
             sizeLabel: this.formatSize(version.size),
             modifiedLabel: this.formatDate(version.lastModifiedDateTime)
         }));
-    }
-
-    get hasVersions() {
-        return !this.versionsLoading && this.versions.length > 0;
     }
 
     async loadFiles() {
         this.isLoading = true;
         this.errorMessage = undefined;
         this.expandedId = undefined;
-        this.versions = [];
         try {
             this.files = await getRecordFiles({ recordId: this.recordId });
         } catch (error) {
@@ -87,83 +80,77 @@ export default class SharepointFileViewer extends LightningElement {
         this.loadFiles();
     }
 
-    get acceptedFormats() {
-        return [];
+    handleUploadClick() {
+        this.template.querySelector('input[type="file"]').click();
     }
 
     /**
-     * The platform has already written the file into Salesforce Files and linked it to
-     * the record. What happens next depends on size: a file the normal sync can carry is
-     * left to it, and a larger one is pushed to SharePoint from the browser.
+     * SharePoint first, then Salesforce. If SharePoint fails nothing is created in
+     * Salesforce, so there is no orphan record to clean up, and the Salesforce link
+     * record needs SharePoint's URL anyway.
      */
-    async handleSalesforceUploadFinished(event) {
-        const uploaded = event.detail.files && event.detail.files[0];
-        if (!uploaded) {
+    async handleFileChosen(event) {
+        const input = event.target;
+        const file = input.files && input.files[0];
+        if (!file) {
             return;
         }
 
         this.isUploading = true;
         this.uploadProgress = 0;
+        this.uploadFileName = file.name;
         this.errorMessage = undefined;
 
         try {
-            const details = await getUploadedFile({ contentDocumentId: uploaded.documentId });
-            this.uploadFileName = details.fileName;
+            // 1. Ask SharePoint for a pre-authenticated upload address.
+            const session = await startUpload({ recordId: this.recordId, fileName: file.name });
 
-            if (Number(details.size) <= Number(details.maxSyncSize)) {
-                this.toast(
-                    'Uploaded',
-                    `${details.fileName} is in Salesforce and will sync to SharePoint shortly.`,
-                    'success'
-                );
-                await this.loadFiles();
-                return;
+            // 2. Send the bytes straight from the browser. Apex never touches them, so
+            //    the heap limit that caps the automatic sync does not apply.
+            const driveItem = await this.sendChunks(session.uploadUrl, file);
+
+            // 3. Library columns, owner access, and the folder link on the record.
+            const problems = await finishUpload({
+                recordId: this.recordId,
+                itemId: driveItem.id,
+                fileName: driveItem.name
+            });
+
+            // 4. The Salesforce copy: real bytes when small enough, otherwise a link.
+            const smallEnough = file.size <= SALESFORCE_COPY_MAX;
+            const saved = await saveToSalesforce({
+                recordId: this.recordId,
+                fileName: driveItem.name,
+                base64Data: smallEnough ? await this.toBase64(file) : null,
+                sharePointUrl: driveItem.webUrl
+            });
+
+            const where = saved.storedInSalesforce
+                ? 'SharePoint and Salesforce'
+                : 'SharePoint, with a link added to this record';
+
+            if (problems) {
+                this.toast('Uploaded with warnings', `${driveItem.name} is in ${where}, but ${problems}.`, 'warning');
+            } else {
+                this.toast('Uploaded', `${driveItem.name} is in ${where}.`, 'success');
             }
 
-            await this.pushToSharePoint(details);
+            await this.loadFiles();
+            this.dispatchEvent(new RefreshEvent());
 
         } catch (error) {
             this.errorMessage = this.reduceError(error);
-            this.toast('SharePoint upload failed', this.errorMessage, 'error');
+            this.toast('Upload failed', this.errorMessage, 'error');
         } finally {
             this.isUploading = false;
             this.uploadProgress = 0;
             this.uploadFileName = undefined;
+            // Lets the same file be chosen again after a failure.
+            input.value = null;
         }
-    }
-
-    /**
-     * Reads the file back out of Salesforce and sends it to SharePoint in chunks. The
-     * bytes travel browser to SharePoint directly, so no Apex heap limit applies.
-     */
-    async pushToSharePoint(details) {
-        const download = await fetch(details.downloadUrl, { credentials: 'include' });
-        if (!download.ok) {
-            throw new Error(`Could not read the file back from Salesforce (HTTP ${download.status}).`);
-        }
-        const blob = await download.blob();
-
-        const session = await startUpload({ recordId: this.recordId, fileName: details.fileName });
-        const driveItem = await this.sendChunks(session.uploadUrl, blob);
-
-        const problems = await finishUpload({
-            recordId: this.recordId,
-            itemId: driveItem.id,
-            fileName: driveItem.name,
-            webUrl: driveItem.webUrl,
-            contentVersionId: details.contentVersionId
-        });
-
-        if (problems) {
-            this.toast('Uploaded with warnings', `${driveItem.name} is in both systems, but ${problems}.`, 'warning');
-        } else {
-            this.toast('Uploaded', `${driveItem.name} is now in Salesforce and SharePoint.`, 'success');
-        }
-        await this.loadFiles();
     }
 
     async sendChunks(uploadUrl, file) {
-        // 'file' is a Blob read back from Salesforce, sliced the same way a File is.
         let driveItem;
 
         for (let start = 0; start < file.size; start += CHUNK_SIZE) {
@@ -196,6 +183,16 @@ export default class SharepointFileViewer extends LightningElement {
         return driveItem;
     }
 
+    toBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            // readAsDataURL yields "data:<mime>;base64,<payload>" — Apex wants the payload.
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = () => reject(new Error('The file could not be read for the Salesforce copy.'));
+            reader.readAsDataURL(file);
+        });
+    }
+
     async handleToggleVersions(event) {
         const fileId = event.currentTarget.dataset.id;
 
@@ -213,7 +210,6 @@ export default class SharepointFileViewer extends LightningElement {
             this.versions = await getFileVersions({ itemId: fileId });
         } catch (error) {
             this.errorMessage = this.reduceError(error);
-            this.toast('Could not load history', this.errorMessage, 'error');
             this.expandedId = undefined;
         } finally {
             this.versionsLoading = false;
@@ -224,6 +220,35 @@ export default class SharepointFileViewer extends LightningElement {
         const url = event.currentTarget.dataset.url;
         if (url) {
             window.open(url, '_blank', 'noopener');
+        }
+    }
+
+    async handleRestore(event) {
+        const versionId = event.currentTarget.dataset.version;
+        const file = this.files.find((f) => f.id === this.expandedId);
+        if (!file) {
+            return;
+        }
+
+        this.versionsLoading = true;
+        try {
+            await restoreVersionToRecord({
+                itemId: file.id,
+                versionId,
+                fileName: file.name,
+                recordId: this.recordId
+            });
+            this.toast(
+                'Version restored',
+                `${file.name} version ${versionId} was added to this record as a Salesforce file.`,
+                'success'
+            );
+            this.dispatchEvent(new RefreshEvent());
+        } catch (error) {
+            this.errorMessage = this.reduceError(error);
+            this.toast('Restore failed', this.errorMessage, 'error');
+        } finally {
+            this.versionsLoading = false;
         }
     }
 
@@ -246,16 +271,7 @@ export default class SharepointFileViewer extends LightningElement {
             return '';
         }
         const parsed = new Date(isoString);
-        if (Number.isNaN(parsed.getTime())) {
-            return '';
-        }
-        return parsed.toLocaleString(undefined, {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+        return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString();
     }
 
     reduceError(error) {
