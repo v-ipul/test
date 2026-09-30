@@ -1,15 +1,18 @@
 /**
  * Backs the sharepointFileViewer LWC.
  *
- * Reads the SharePoint folder belonging to the current record, shows version history
- * for any file in it, and pulls a chosen version back into Salesforce as a new file.
+ * Reads the SharePoint folder belonging to the current record, returns version history
+ * for a document in it, and copies a chosen version back into Salesforce.
+ *
+ * The three @AuraEnabled methods here are exactly what the component imports:
+ * getRecordFiles, getFileVersions, restoreVersionToRecord.
  */
 public with sharing class SharePointFileController {
 
     /**
-     * Files in this record's own SharePoint folder. Returns an empty list rather than
-     * an error when the folder does not exist yet, because a record with no synced
-     * files is a normal state, not a failure.
+     * Files in this record's own SharePoint folder. A folder that does not exist yet
+     * returns an empty list rather than an error, because a record with no synced files
+     * is an ordinary state. Genuine failures such as a 403 are surfaced.
      */
     @AuraEnabled
     public static List<FileMetadata> getRecordFiles(Id recordId) {
@@ -20,15 +23,23 @@ public with sharing class SharePointFileController {
             String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
             List<FileMetadata> files = new List<FileMetadata>();
 
-            for (Object entry : SharePointService.listChildren(folderPath, true)) {
+            for (Object entry : SharePointService.listChildren(folderPath)) {
                 Map<String, Object> item = (Map<String, Object>) entry;
                 if (item.containsKey('folder')) {
                     continue;
                 }
-                files.add(toMetadata(item));
+                FileMetadata f = new FileMetadata();
+                f.id = (String) item.get('id');
+                f.name = (String) item.get('name');
+                f.webUrl = (String) item.get('webUrl');
+                f.size = toLong(item.get('size'));
+                f.createdBy = displayName(item.get('createdBy'));
+                f.lastModifiedBy = displayName(item.get('lastModifiedBy'));
+                f.lastModifiedDateTime = (String) item.get('lastModifiedDateTime');
+                files.add(f);
             }
-            resolveUploaderNames(files);
             return files;
+
         } catch (SharePointService.SharePointException e) {
             if (e.getMessage().contains('404') || e.getMessage().containsIgnoreCase('itemNotFound')) {
                 return new List<FileMetadata>();
@@ -51,164 +62,90 @@ public with sharing class SharePointFileController {
 
                 VersionMetadata v = new VersionMetadata();
                 v.id = (String) raw.get('id');
-                v.lastModifiedDateTime = (String) raw.get('lastModifiedDateTime');
                 v.size = toLong(raw.get('size'));
+                v.lastModifiedDateTime = (String) raw.get('lastModifiedDateTime');
+                v.lastModifiedBy = displayName(raw.get('lastModifiedBy'));
                 versions.add(v);
             }
-            return renumber(collapseMetadataVersions(versions));
+            return versions;
         } catch (Exception e) {
             throw buildException(e.getMessage());
         }
     }
 
     /**
-     * One Salesforce upload produces two SharePoint versions: the file content creates
-     * one, and writing the SF Name and SF ID columns immediately afterwards creates
-     * another, because SharePoint versions a metadata change like any other change.
+     * Pulls one historical version out of SharePoint and files it against the record as
+     * a new Salesforce file.
      *
-     * Both versions hold identical content, so showing both is misleading. Versions of
-     * the same size recorded within two minutes of each other are treated as one, and
-     * the most recent is kept.
-     *
-     * This is a display decision only. SharePoint still holds every version, and they
-     * remain visible in SharePoint itself.
+     * Graph exposes no public download URL for a version, so the bytes come through Apex.
+     * That means the 6 MB synchronous heap limit applies here, which is tighter than the
+     * outbound sync: a large document may sync to SharePoint successfully and still be
+     * too big to restore.
      */
-    @TestVisible
-    private static List<VersionMetadata> collapseMetadataVersions(List<VersionMetadata> versions) {
-        List<VersionMetadata> collapsed = new List<VersionMetadata>();
-
-        for (VersionMetadata current : versions) {
-            Boolean isDuplicate = false;
-
-            if (!collapsed.isEmpty()) {
-                VersionMetadata kept = collapsed[collapsed.size() - 1];
-                Long gapSeconds = secondsBetween(kept.lastModifiedDateTime, current.lastModifiedDateTime);
-                isDuplicate = kept.size == current.size && gapSeconds != null && gapSeconds <= 120;
-            }
-            if (!isDuplicate) {
-                collapsed.add(current);
-            }
+    @AuraEnabled
+    public static Id restoreVersionToRecord(String itemId, String versionId, String fileName, Id recordId) {
+        if (String.isBlank(itemId) || String.isBlank(versionId)) {
+            throw buildException('No version was selected.');
         }
-        return collapsed;
-    }
-
-    /**
-     * SharePoint's own version numbers count the metadata writes that the integration
-     * makes, so a file uploaded once from Salesforce is numbered 2.0 there. After the
-     * metadata versions are collapsed, the remaining ones are renumbered from 1.0 so the
-     * count matches what a Salesforce user actually did.
-     *
-     * The SharePoint number is kept in sharePointVersionId, because it is the value
-     * needed to talk to Graph about a specific version and the value a SharePoint
-     * administrator will see.
-     */
-    @TestVisible
-    private static List<VersionMetadata> renumber(List<VersionMetadata> versions) {
-        // Graph returns newest first; number from the oldest upwards.
-        Integer counter = versions.size();
-        for (VersionMetadata v : versions) {
-            v.sharePointVersionId = v.id;
-            v.id = String.valueOf(counter) + '.0';
-            counter--;
+        if (recordId == null) {
+            throw buildException('This component has to be placed on a record page.');
         }
-        return versions;
-    }
-
-    private static Long secondsBetween(String isoA, String isoB) {
-        if (String.isBlank(isoA) || String.isBlank(isoB)) {
-            return null;
+        if (!Schema.SObjectType.ContentVersion.isCreateable() || !Schema.SObjectType.ContentDocumentLink.isCreateable()) {
+            throw buildException('You do not have permission to add files to this record.');
         }
+
+        Boolean previousBypass = SharePointSyncBypass.disabled;
         try {
-            Datetime a = (Datetime) JSON.deserialize('"' + isoA + '"', Datetime.class);
-            Datetime b = (Datetime) JSON.deserialize('"' + isoB + '"', Datetime.class);
-            return Math.abs(a.getTime() - b.getTime()) / 1000;
+            Blob body = SharePointService.downloadVersion(itemId, versionId);
+            String safeName = buildRestoredName(fileName, versionId);
+
+            ContentVersion cv = new ContentVersion(
+                Title = safeName,
+                PathOnClient = safeName,
+                VersionData = body,
+                SharePoint_Sync_Status__c = 'Restored from SharePoint version ' + versionId
+            );
+
+            // The bytes already live in SharePoint, so the outbound trigger must not push
+            // this copy straight back and create a duplicate.
+            SharePointSyncBypass.disabled = true;
+            insert cv;
+
+            Id contentDocumentId = [
+                SELECT ContentDocumentId FROM ContentVersion WHERE Id = :cv.Id LIMIT 1
+            ].ContentDocumentId;
+
+            insert new ContentDocumentLink(
+                ContentDocumentId = contentDocumentId,
+                LinkedEntityId = recordId,
+                ShareType = 'V',
+                Visibility = 'AllUsers'
+            );
+            return cv.Id;
+
         } catch (Exception e) {
-            return null;
+            throw buildException(e.getMessage());
+        } finally {
+            SharePointSyncBypass.disabled = previousBypass;
         }
     }
 
     /**
-     * The column holds the uploader's email. Users recognise names, so the matching
-     * Salesforce user is resolved and the name shown instead.
-     *
-     * Sandbox refreshes append ".invalid" to every user email, so both sides are
-     * normalised before matching.
+     * "quote.pdf" plus version 2.0 becomes "quote (v2.0).pdf" so the restored copy does
+     * not collide with the current file in the Salesforce Files list.
      */
-    private static void resolveUploaderNames(List<FileMetadata> files) {
-        Set<String> emails = new Set<String>();
-        for (FileMetadata f : files) {
-            if (String.isNotBlank(f.uploadedBy)) {
-                emails.add(normalise(f.uploadedBy));
-            }
+    @TestVisible
+    private static String buildRestoredName(String fileName, String versionId) {
+        String base = String.isBlank(fileName) ? 'SharePoint file' : fileName;
+        Integer dot = base.lastIndexOf('.');
+        if (dot > 0) {
+            return base.substring(0, dot) + ' (v' + versionId + ')' + base.substring(dot);
         }
-        if (emails.isEmpty()) {
-            return;
-        }
-
-        Map<String, String> nameByEmail = new Map<String, String>();
-        for (User u : [SELECT Name, Email FROM User WHERE IsActive = true LIMIT 2000]) {
-            String key = normalise(u.Email);
-            if (emails.contains(key)) {
-                nameByEmail.put(key, u.Name);
-            }
-        }
-        for (FileMetadata f : files) {
-            if (String.isNotBlank(f.uploadedBy)) {
-                String name = nameByEmail.get(normalise(f.uploadedBy));
-                f.uploadedByName = String.isBlank(name) ? f.uploadedBy : name;
-            }
-        }
-    }
-
-    private static String normalise(String email) {
-        if (String.isBlank(email)) {
-            return '';
-        }
-        String trimmed = email.trim().toLowerCase();
-        while (trimmed.endsWith('.invalid')) {
-            trimmed = trimmed.substring(0, trimmed.length() - 8);
-        }
-        return trimmed;
-    }
-
-    private static FileMetadata toMetadata(Map<String, Object> item) {
-        FileMetadata f = new FileMetadata();
-        f.id = (String) item.get('id');
-        f.name = (String) item.get('name');
-        f.webUrl = (String) item.get('webUrl');
-        f.size = toLong(item.get('size'));
-        f.createdBy = displayName(item.get('createdBy'));
-        f.lastModifiedBy = displayName(item.get('lastModifiedBy'));
-        f.lastModifiedDateTime = (String) item.get('lastModifiedDateTime');
-        f.createdDateTime = (String) item.get('createdDateTime');
-        f.uploadedBy = uploaderFromColumns(item);
-        return f;
+        return base + ' (v' + versionId + ')';
     }
 
     /**
-     * Under app-only authentication SharePoint records the application as the author of
-     * every file, so the real uploader is read from the library column the integration
-     * writes instead.
-     */
-    private static String uploaderFromColumns(Map<String, Object> item) {
-        String columnName = SharePointConfig.get().Column_Uploaded_By__c;
-        if (String.isBlank(columnName)) {
-            return null;
-        }
-        Object listItem = item.get('listItem');
-        if (listItem == null) {
-            return null;
-        }
-        Object fields = ((Map<String, Object>) listItem).get('fields');
-        if (fields == null) {
-            return null;
-        }
-        Object value = ((Map<String, Object>) fields).get(columnName.trim());
-        return value == null ? null : String.valueOf(value);
-    }
-
-    /**
-     * Untyped JSON gives an Integer for small numbers and a Long or Decimal for large
+     * Untyped JSON yields an Integer for small numbers and a Long or Decimal for large
      * ones, so a straight (Integer) cast throws on big files.
      */
     private static Long toLong(Object value) {
@@ -244,15 +181,12 @@ public with sharing class SharePointFileController {
         @AuraEnabled public String createdBy;
         @AuraEnabled public String lastModifiedBy;
         @AuraEnabled public String lastModifiedDateTime;
-        @AuraEnabled public String createdDateTime;
-        @AuraEnabled public String uploadedBy;
-        @AuraEnabled public String uploadedByName;
     }
 
     public class VersionMetadata {
         @AuraEnabled public String id;
-        @AuraEnabled public String sharePointVersionId;
-        @AuraEnabled public String lastModifiedDateTime;
         @AuraEnabled public Long size;
+        @AuraEnabled public String lastModifiedDateTime;
+        @AuraEnabled public String lastModifiedBy;
     }
 }
