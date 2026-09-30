@@ -246,6 +246,80 @@ public with sharing class SharePointLargeFileController {
     }
 
     /**
+     * Creates the Salesforce copy after the file has landed in SharePoint.
+     *
+     * base64Data present  -> a real Salesforce file holding the bytes.
+     * base64Data blank    -> a link record pointing at the SharePoint document, which
+     *                        appears in the record's Files list and opens the original.
+     *
+     * The component decides which, because only it knows the file size, and a file above
+     * a few MB cannot be passed through an Apex request at all.
+     *
+     * Either way the record carries the SharePoint URL, which stops the outbound trigger
+     * from pushing the file back to SharePoint and creating a duplicate.
+     */
+    @AuraEnabled
+    public static SaveResult saveToSalesforce(Id recordId, String fileName, String base64Data, String sharePointUrl) {
+        if (recordId == null) {
+            throw buildException('This component has to be placed on a record page.');
+        }
+        if (String.isBlank(fileName)) {
+            throw buildException('No file name was supplied.');
+        }
+        if (!Schema.SObjectType.ContentVersion.isCreateable() || !Schema.SObjectType.ContentDocumentLink.isCreateable()) {
+            throw buildException('You do not have permission to add files to this record.');
+        }
+
+        Boolean previousBypass = SharePointSyncBypass.disabled;
+        try {
+            ContentVersion cv = new ContentVersion(
+                Title = fileName,
+                SharePoint_Item_URL__c = sharePointUrl
+            );
+
+            SaveResult result = new SaveResult();
+
+            if (String.isNotBlank(base64Data)) {
+                cv.PathOnClient = fileName;
+                cv.VersionData = EncodingUtil.base64Decode(base64Data);
+                cv.SharePoint_Sync_Status__c = 'Uploaded to SharePoint and stored in Salesforce';
+                result.storedInSalesforce = true;
+            } else {
+                // A link-type file: no bytes, but it shows in the Files list and opens
+                // the SharePoint document.
+                if (String.isBlank(sharePointUrl)) {
+                    throw new LargeUploadException('No SharePoint link was supplied for the Salesforce record.');
+                }
+                cv.ContentUrl = sharePointUrl;
+                cv.SharePoint_Sync_Status__c = 'Stored in SharePoint, linked from Salesforce';
+                result.storedInSalesforce = false;
+            }
+
+            SharePointSyncBypass.disabled = true;
+            insert cv;
+
+            Id contentDocumentId = [
+                SELECT ContentDocumentId FROM ContentVersion WHERE Id = :cv.Id LIMIT 1
+            ].ContentDocumentId;
+
+            insert new ContentDocumentLink(
+                ContentDocumentId = contentDocumentId,
+                LinkedEntityId = recordId,
+                ShareType = 'V',
+                Visibility = 'AllUsers'
+            );
+
+            result.contentVersionId = cv.Id;
+            return result;
+
+        } catch (Exception e) {
+            throw buildException(e.getMessage());
+        } finally {
+            SharePointSyncBypass.disabled = previousBypass;
+        }
+    }
+
+    /**
      * Duplicated from the queueable, whose copy is private. OwnerId can point at a Queue
      * on some objects, so the type is checked before the User is read.
      */
@@ -379,6 +453,11 @@ public with sharing class SharePointLargeFileController {
         @AuraEnabled public Long size;
         @AuraEnabled public Long maxSyncSize;
         @AuraEnabled public String downloadUrl;
+    }
+
+    public class SaveResult {
+        @AuraEnabled public Id contentVersionId;
+        @AuraEnabled public Boolean storedInSalesforce;
     }
 
     public class UploadSession {
