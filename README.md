@@ -25,3 +25,5 @@ Under "CSP Directives", tick connect-src
 SELECT Title, ContentUrl, ContentSize, SharePoint_Sync_Status__c
 FROM ContentVersion
 WHERE Title LIKE '50mb%' AND IsLatest = true
+
+https://bankunited--devopx.sandbox.lightning.force.com
