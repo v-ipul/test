@@ -27,3 +27,12 @@ FROM ContentVersion
 WHERE Title LIKE '50mb%' AND IsLatest = true
 
 https://bankunited--devopx.sandbox.lightning.force.com
+
+
+Authorize Endpoint URL-
+
+https://login.microsoftonline.com/common/oauth2/authorize?resource=https://zl2zb.sharepoint.com&prompt=login I
+
+Token Endpoint URL-
+
+https:/login.microsoftonline.com/common/oauth2/tokenoauth2%2Ftoken&v=NgKZHXPqS6w)
