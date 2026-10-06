@@ -5,3 +5,8 @@ if (isPersonAccountEnabled) {
 } else {
     System.debug('Person Accounts are NOT enabled.');
 }
+
+
+SELECT Id, DeveloperName 
+FROM FieldDefinition 
+WHERE EntityDefinitionId = 'Account' AND DeveloperName = 'IsPersonAccount'
