@@ -1,41 +1,7 @@
-Quick note on one constraint in the SharePoint POC, and what I'd suggest we do about it.
+Boolean isPersonAccountEnabled = Schema.sObjectType.Account.fields.getMap().containsKey('IsPersonAccount');
 
-The constraint
-
-Files attached to an Opportunity sync to SharePoint automatically. This works reliably up to about 6MB per file. Above that, Salesforce's own platform limits stop the transfer.
-
-The reason: Salesforce gives each background process a fixed 12MB working area. To send a file, our code has to hold the file in that space twice - once reading it out of Salesforce, once packaging it for SharePoint - and the format used for transmission makes files roughly a third larger. A 6MB document therefore needs around 16MB of a 12MB allowance.
-
-This is a platform limit that applies to every Salesforce customer. It isn't something we can tune around in code.
-
-What happens today
-
-Files above the limit are not lost. They stay in Salesforce as normal, and we record against each one that it wasn't copied to SharePoint and why. Nothing fails silently, and users aren't blocked from attaching documents.
-
-What I'd suggest
-
-Before we invest in a workaround, I'd like to measure how often this actually bites. I can report after a few weeks of real use exactly how many Wholesale Banking documents exceeded the limit and what they were. That turns this from a hypothetical into a number.
-
-If it turns out to be a real problem, there are two routes:
-
-1. Upload directly from the browser to SharePoint, bypassing the limit entirely. Handles files of 50MB and above. The trade-off is that it only covers files uploaded through our custom component, so users would have two ways to add a document and we'd need to explain the difference. Roughly [X] days of work.
-<input type="file">
-gives your code the bytes
-SharePoint
-any size, sent direct
-Salesforce, through Apex
-capped at 3.5 MB
-lightning-file-upload
-
-
-Both are file pickers. The difference isn't what they collect, it's what they're allowed to do afterwards.
-<input type="file"> is plain HTML. It hands your JavaScript a File object and stops there. Everything after that is yours to write — which is exactly why it works for SharePoint. Apex asks Graph for an upload session, Graph returns a pre-authenticated URL, and your code PUTs the file to that URL in 5 MB chunks. No token, no session, no credentials in the browser. The URL itself is the permission, and it expires in about fifteen minutes. Because the bytes go straight from the user's machine to Microsoft, Apex never touches them and the heap limit never enters the picture. Any size you like.
-What <input type="file"> cannot do is put that same file into Salesforce. Writing a ContentVersion over the REST API requires a session ID in the request, and Lightning Web Components are specifically prevented from obtaining one — that's a deliberate security boundary, not a gap. So the only route left is passing the file to Apex as base64 through an @AuraEnabled method, and that lands you back on the 6 MB workbench. It works, but only for small files.
-lightning-file-upload is the inverse. It's a Salesforce base component with a privileged channel to the platform's own file service. It takes a 200 MB document into Salesforce without difficulty, creates the ContentVersion and the ContentDocumentLink for you, and never involves Apex at all. Which is precisely why it's useless for our purpose: it owns its own file dialog, and it gives you nothing back but a ContentDocumentId. You can't hand it a file you already have, and you can't get the file out of it. Once the document is inside Salesforce, moving it to SharePoint means reading VersionData through Apex — the 6 MB ceiling again, approached from the other side.
-So each component solves one direction and blocks the other. <input type="file"> holds the raw bytes and can reach SharePoint but not Salesforce. lightning-file-upload can reach Salesforce but never surrenders the bytes.
-This is why the design uses <input type="file"> and accepts a split behaviour: below about 4 MB the file goes to SharePoint as chunks and to Salesforce as base64 through Apex, giving real copies in both systems. Above that, the file goes to SharePoint in full and Salesforce receives a link record that appears in the Opportunity's Files list and opens the real document. Not a compromise anyone would choose from scratch, but the honest limit of what the platform allows without a Visualforce session-ID workaround that a bank's security review would rightly question.
-[12:57 AM]Why the browser can't just use its own badge. It has one. But Lightning Web Components are blocked from reading it, on purpose. If a component could get hold of the session ID, then any flaw in any component — a bad third-party package, a cross-site scripting hole in a text field — could leak it, and whoever had it could act as that user across the entire org. So Salesforce walls it off. Your component can't read the session ID, can't read cookies, and can't call /services/data/... directly. That's a security decision, not an oversight, and there's no setting that turns it off.
-So the only door left is Apex. The component passes the file to an Apex method, and Apex — running on the server, where credentials are safe — writes the ContentVersion.
-Why the file has to become base64 first. The channel between a component and Apex carries JSON, and JSON is text. A PDF is raw binary, and stuffing binary bytes into a text field corrupts them. Base64 re-expresses those bytes using only safe characters, so they survive the trip. The cost is size: base64 makes everything about a third bigger. A 3 MB PDF becomes 4 MB of text before it's even sent.
-And that's where the ceiling comes back. Apex has a fixed memory allowance — the workbench. To create the file it has to hold the base64 text, then decode it back into bytes, so both versions are on the bench at once. A 6 MB file means roughly 8 MB of text plus 6 MB of decoded bytes, against a 6 MB allowance for synchronous Apex. It doesn't fit.
-Which leaves the split. Below about 3.5 MB the round trip through Apex fits comfortably, so Salesforce gets the actual file. Above that it can't, so Salesforce gets a link record instead — an entry in the Files list with the right name that opens the real document in SharePoint.
+if (isPersonAccountEnabled) {
+    System.debug('Person Accounts are enabled in this org.');
+} else {
+    System.debug('Person Accounts are NOT enabled.');
+}
