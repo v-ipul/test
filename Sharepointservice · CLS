@@ -124,18 +124,30 @@ public with sharing class SharePointService {
      * If the destination folder does not exist yet Graph answers 404, so we create
      * the folder chain and retry once. That keeps the happy path to a single callout.
      */
+    /**
+     * Result of an upload: the file itself, plus the record folder when this upload
+     * was the thing that created it. createdFolder is null when the folder already
+     * existed, which is what lets the caller grant folder access exactly once.
+     */
+    public class UploadResult {
+        public Map<String, Object> item;
+        public Map<String, Object> createdFolder;
+    }
+
     private static final String CONFLICT_BEHAVIOUR = 'rename';
 
-    public static Map<String, Object> uploadFile(String folderPath, String fileName, Blob content) {
+    public static UploadResult uploadFile(String folderPath, String fileName, Blob content) {
         if (content == null) {
             throw new SharePointException('File body is empty.');
         }
         String url = driveBase() + '/root:/' + encodePath(folderPath) + '/' + encodeSegment(fileName) +
                      ':/content?@microsoft.graph.conflictBehavior=' + CONFLICT_BEHAVIOUR;
 
+        UploadResult result = new UploadResult();
+
         HttpResponse res = send('PUT', url, content, 'application/octet-stream', 'application/json');
         if (res.getStatusCode() == 404) {
-            ensureFolder(folderPath);
+            result.createdFolder = ensureFolder(folderPath);
             res = send('PUT', url, content, 'application/octet-stream', 'application/json');
         }
         if (res.getStatusCode() == 409) {
@@ -145,15 +157,19 @@ public with sharing class SharePointService {
         if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
             throw new SharePointException('Upload failed (HTTP ' + res.getStatusCode() + '): ' + truncate(res.getBody()));
         }
-        return (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+        result.item = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+        return result;
     }
 
     /**
      * Creates each missing segment of folderPath. conflictBehavior=fail means an
      * existing folder comes back as 409, which we treat as success rather than
      * overwriting anything already in the library.
+     *
+     * Returns the LAST segment's driveItem when that segment was newly created, or
+     * null when it already existed.
      */
-    public static void ensureFolder(String folderPath) {
+    public static Map<String, Object> ensureFolder(String folderPath) {
         List<String> segments = new List<String>();
         if (String.isNotBlank(folderPath)) {
             for (String part : folderPath.split('/')) {
@@ -163,6 +179,8 @@ public with sharing class SharePointService {
             }
         }
         String parent = '';
+        Map<String, Object> created = null;
+
         for (String segment : segments) {
             String url = driveBase() + '/root' +
                 (String.isBlank(parent) ? '' : ':/' + encodePath(parent) + ':') + '/children';
@@ -174,18 +192,36 @@ public with sharing class SharePointService {
             };
             HttpResponse res = send('POST', url, Blob.valueOf(JSON.serialize(payload)), 'application/json', 'application/json');
             Integer status = res.getStatusCode();
-            if (status != 200 && status != 201 && status != 409) {
+
+            if (status == 200 || status == 201) {
+                created = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+            } else if (status == 409) {
+                created = null;
+            } else {
                 throw new SharePointException('Could not create folder "' + segment +
                     '" (HTTP ' + status + '): ' + truncate(res.getBody()));
             }
             parent = String.isBlank(parent) ? segment : parent + '/' + segment;
         }
+        return created;
     }
 
     public static List<Object> listChildren(String folderPath) {
+        return listChildren(folderPath, false);
+    }
+
+    /**
+     * withListItemFields expands each child's SharePoint column values in the same
+     * callout, so the Salesforce uploader can be shown without a second round trip.
+     */
+    public static List<Object> listChildren(String folderPath, Boolean withListItemFields) {
         String url = String.isBlank(folderPath)
             ? driveBase() + '/root/children'
             : driveBase() + '/root:/' + encodePath(folderPath) + ':/children';
+
+        if (withListItemFields == true) {
+            url += '?$expand=listItem($expand=fields)';
+        }
 
         HttpResponse res = send('GET', url, null, null, 'application/json');
         if (res.getStatusCode() != 200) {
@@ -270,6 +306,27 @@ public with sharing class SharePointService {
     }
 
     /**
+     * Metadata for a folder or file addressed by path. Returns null when it does not
+     * exist, because "not there yet" is an ordinary answer here rather than a failure.
+     */
+    public static Map<String, Object> getItemByPath(String path) {
+        if (String.isBlank(path)) {
+            return null;
+        }
+        String url = driveBase() + '/root:/' + encodePath(path);
+        HttpResponse res = send('GET', url, null, null, 'application/json');
+
+        if (res.getStatusCode() == 404) {
+            return null;
+        }
+        if (res.getStatusCode() != 200) {
+            throw new SharePointException('Could not read "' + path + '" (HTTP ' +
+                res.getStatusCode() + '): ' + truncate(res.getBody()));
+        }
+        return (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+    }
+
+    /**
      * Writes the library's custom columns on an uploaded file. Keys must be the
      * column's internal name, not its display name.
      */
@@ -283,6 +340,77 @@ public with sharing class SharePointService {
             throw new SharePointException('Could not set list item fields (HTTP ' +
                 res.getStatusCode() + '): ' + truncate(res.getBody()));
         }
+    }
+
+    /**
+     * Same as grantAccess, but addresses the folder by its path instead of an item id.
+     * That means the caller does not have to look the folder up first, so the grant can
+     * be reapplied on every sync rather than only when the folder is created.
+     */
+    public static void grantAccessByPath(String folderPath, String email, String role) {
+        if (String.isBlank(folderPath) || String.isBlank(email)) {
+            return;
+        }
+        String url = driveBase() + '/root:/' + encodePath(folderPath) + ':/invite';
+        invite(url, email, role);
+    }
+
+    /**
+     * Grants one person access to a single file.
+     *
+     * This is ADDITIVE. The file still inherits the library's permissions, so everyone
+     * who could already see the library can still see it — this only adds the named
+     * person on top. Making a file exclusive requires breaking role inheritance, which
+     * Graph does not expose and which needs Full Control on the site.
+     */
+    public static void grantAccess(String itemId, String email, String role) {
+        if (String.isBlank(itemId) || String.isBlank(email)) {
+            return;
+        }
+        invite(driveBase() + '/items/' + encodeSegment(itemId) + '/invite', email, role);
+    }
+
+    /**
+     * sendInvitation=false keeps SharePoint from emailing the person; requireSignIn
+     * ties the grant to their identity rather than issuing an anonymous link.
+     * Re-inviting someone who already has access is accepted, not an error, which is
+     * what makes this safe to call on every sync.
+     */
+    private static void invite(String url, String email, String role) {
+        String cleanEmail = normaliseEmail(email);
+
+        // Read only, always. Editing happens in Salesforce; the SharePoint copy is a
+        // record of what was uploaded, not a working document. Hardcoded rather than
+        // configured so a setting cannot quietly escalate anyone to edit rights.
+        String effectiveRole = 'read';
+
+        Map<String, Object> payload = new Map<String, Object>{
+            'recipients' => new List<Object>{ new Map<String, Object>{ 'email' => cleanEmail } },
+            'requireSignIn' => true,
+            'sendInvitation' => false,
+            'roles' => new List<String>{ effectiveRole }
+        };
+
+        HttpResponse res = send('POST', url, Blob.valueOf(JSON.serialize(payload)), 'application/json', 'application/json');
+
+        if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
+            throw new SharePointException('Could not grant access to ' + cleanEmail +
+                ' (HTTP ' + res.getStatusCode() + '): ' + truncate(res.getBody()));
+        }
+    }
+
+    /**
+     * Sandbox refreshes append ".invalid" to every user email, which matches no Entra
+     * account. Stripping it lets the same code be tested in a sandbox and run in
+     * production unchanged; no real address ends in .invalid.
+     */
+    @TestVisible
+    private static String normaliseEmail(String email) {
+        String trimmed = email == null ? '' : email.trim();
+        while (trimmed.toLowerCase().endsWith('.invalid')) {
+            trimmed = trimmed.substring(0, trimmed.length() - 8);
+        }
+        return trimmed;
     }
 
     public static String sanitize(String raw) {
