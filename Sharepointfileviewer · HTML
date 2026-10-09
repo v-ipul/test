@@ -1,19 +1,38 @@
 <template>
     <lightning-card title="SharePoint files" icon-name="doctype:folder">
         <div slot="actions">
-            <lightning-button
-                label="Upload"
-                icon-name="utility:upload"
-                onclick={handleUploadClick}
-                disabled={isUploading}>
-            </lightning-button>
             <lightning-button-icon
-                class="slds-p-left_x-small"
                 icon-name="utility:refresh"
                 alternative-text="Refresh"
                 title="Refresh"
                 onclick={handleRefresh}>
             </lightning-button-icon>
+        </div>
+
+        <div class="slds-p-horizontal_medium slds-p-bottom_small slds-grid slds-gutters_small sp-upload-bar">
+            <div class="slds-col sp-upload-option">
+                <lightning-button
+                    label="Apex based method"
+                    icon-name="utility:upload"
+                    onclick={handleApexUploadClick}
+                    disabled={isUploading}>
+                </lightning-button>
+                <p class="slds-text-body_small slds-text-color_weak sp-upload-hint">
+                    File below 6 MB
+                </p>
+            </div>
+
+            <div class="slds-col sp-upload-option">
+                <lightning-button
+                    label="Browser based method"
+                    icon-name="utility:upload"
+                    onclick={handleBrowserUploadClick}
+                    disabled={isUploading}>
+                </lightning-button>
+                <p class="slds-text-body_small slds-text-color_weak sp-upload-hint">
+                    File above 6 MB
+                </p>
+            </div>
         </div>
 
         <input type="file" class="sp-hidden-file-input" onchange={handleFileChosen} />
@@ -74,19 +93,14 @@
                                         <div key={version.id} class="slds-grid slds-grid_vertical-align-center slds-wrap slds-p-vertical_xx-small">
                                             <div class="slds-col slds-size_1-of-2">
                                                 <span class="slds-text-body_small">
-                                                    v{version.id} &middot; {version.sizeLabel}
+                                                    {version.label} &middot; {version.sizeLabel}
                                                 </span>
                                                 <div class="slds-text-body_small slds-text-color_weak">
                                                     {version.modifiedLabel} &middot; {version.lastModifiedBy}
                                                 </div>
                                             </div>
                                             <div class="slds-col slds-size_1-of-2 slds-text-align_right">
-                                                <lightning-button
-                                                    variant="base"
-                                                    label="Copy to Salesforce"
-                                                    data-version={version.id}
-                                                    onclick={handleRestore}>
-                                                </lightning-button>
+                                                
                                             </div>
                                         </div>
                                     </template>
