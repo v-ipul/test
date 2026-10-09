@@ -1,0 +1,169 @@
+/**
+ * Creates the SharePoint folder for an Opportunity at the moment the record is created,
+ * rather than waiting for the first file to be attached.
+ *
+ * Per Opportunity it:
+ *   1. creates Opportunities/{Name} - {Id} if it does not already exist
+ *   2. grants the Opportunity owner access to that folder
+ *   3. writes the folder's SharePoint URL to SharePoint_Folder__c
+ *
+ * Runs asynchronously because a trigger cannot make a callout in the same transaction as
+ * pending DML, and because the user creating an Opportunity should never wait on
+ * SharePoint or be blocked by it being unavailable.
+ */
+public class SharePointFolderQueueable implements Queueable, Database.AllowsCallouts {
+
+    // Folder creation is light (two or three callouts each), so several records are
+    // handled per execution rather than one, with the rest chained.
+    private static final Integer BATCH_SIZE = 5;
+
+    private List<Id> pending;
+
+    public SharePointFolderQueueable(List<Id> recordIds) {
+        this.pending = recordIds == null ? new List<Id>() : recordIds;
+    }
+
+    public void execute(QueueableContext context) {
+        if (pending.isEmpty()) {
+            return;
+        }
+
+        List<Id> batch = new List<Id>();
+        while (!pending.isEmpty() && batch.size() < BATCH_SIZE) {
+            batch.add(pending.remove(0));
+        }
+
+        Map<Id, String> folderUrlByRecord = new Map<Id, String>();
+
+        for (Id recordId : batch) {
+            try {
+                String url = createFolderFor(recordId);
+                if (String.isNotBlank(url)) {
+                    folderUrlByRecord.put(recordId, url);
+                }
+            } catch (Exception e) {
+                // One bad record must not stop the rest of the batch.
+                System.debug(LoggingLevel.ERROR,
+                    'SharePoint folder not created for ' + recordId + ': ' + e.getMessage());
+            }
+        }
+
+        writeFolderUrls(folderUrlByRecord);
+
+        if (!pending.isEmpty() && !Test.isRunningTest()) {
+            System.enqueueJob(new SharePointFolderQueueable(pending));
+        }
+    }
+
+    /**
+     * Returns the folder URL, or null when the field already has a value and nothing
+     * needs writing.
+     */
+    private String createFolderFor(Id recordId) {
+        SharePoint_Setting__mdt cfg = SharePointConfig.get();
+        String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
+
+        // ensureFolder returns the new folder when it created one, null when it already
+        // existed. Reusing it keeps the naming and conflict rules in a single place.
+        Map<String, Object> created = SharePointService.ensureFolder(folderPath);
+
+        grantOwnerAccess(folderPath, recordId, cfg);
+
+        String fieldName = String.isBlank(cfg.Record_Folder_URL_Field__c)
+            ? null
+            : cfg.Record_Folder_URL_Field__c.trim();
+        if (fieldName == null || !isWritableAndEmpty(recordId, fieldName)) {
+            return null;
+        }
+
+        if (created != null && String.isNotBlank((String) created.get('webUrl'))) {
+            return (String) created.get('webUrl');
+        }
+
+        // The folder already existed, so its URL has to be looked up.
+        Map<String, Object> folder = SharePointService.getItemByPath(folderPath);
+        return folder == null ? null : (String) folder.get('webUrl');
+    }
+
+    private void grantOwnerAccess(String folderPath, Id recordId, SharePoint_Setting__mdt cfg) {
+        if (cfg.Grant_Owner_Folder_Access__c != true) {
+            return;
+        }
+        String ownerEmail = resolveOwnerEmail(recordId);
+        if (String.isBlank(ownerEmail)) {
+            return;
+        }
+        try {
+            SharePointService.grantAccessByPath(folderPath, ownerEmail, cfg.Owner_Access_Role__c);
+        } catch (Exception e) {
+            // A permissions failure must not stop the folder link being saved.
+            System.debug(LoggingLevel.ERROR,
+                'Owner access not granted for ' + recordId + ': ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Checks the field exists, is editable, and is currently blank, so a link someone set
+     * by hand is never replaced and no pointless lookup callout is made.
+     */
+    private Boolean isWritableAndEmpty(Id recordId, String fieldName) {
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        Schema.SObjectField field = describe.fields.getMap().get(fieldName);
+        if (field == null || !field.getDescribe().isUpdateable()) {
+            return false;
+        }
+        List<SObject> records = Database.query(
+            'SELECT ' + fieldName + ' FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1');
+        if (records.isEmpty()) {
+            return false;
+        }
+        Object existing = records[0].get(fieldName);
+        return existing == null || String.isBlank(String.valueOf(existing));
+    }
+
+    private void writeFolderUrls(Map<Id, String> folderUrlByRecord) {
+        if (folderUrlByRecord.isEmpty()) {
+            return;
+        }
+        String fieldName = SharePointConfig.get().Record_Folder_URL_Field__c.trim();
+        List<SObject> updates = new List<SObject>();
+
+        for (Id recordId : folderUrlByRecord.keySet()) {
+            SObject record = recordId.getSObjectType().newSObject(recordId);
+            record.put(fieldName, folderUrlByRecord.get(recordId));
+            updates.add(record);
+        }
+
+        // allOrNone false: one locked or validation-blocked record must not discard the rest.
+        List<Database.SaveResult> results = Database.update(updates, false);
+        for (Integer i = 0; i < results.size(); i++) {
+            if (!results[i].isSuccess()) {
+                System.debug(LoggingLevel.ERROR, 'Folder link not saved on ' + updates[i].Id +
+                    ': ' + results[i].getErrors()[0].getMessage());
+            }
+        }
+    }
+
+    /**
+     * OwnerId can point at a Queue on some objects, so the type is checked before the
+     * User is read.
+     */
+    @TestVisible
+    private static String resolveOwnerEmail(Id recordId) {
+        Schema.DescribeSObjectResult describe = recordId.getSObjectType().getDescribe();
+        if (!describe.fields.getMap().containsKey('OwnerId') || !describe.isAccessible()) {
+            return null;
+        }
+        List<SObject> records = Database.query(
+            'SELECT OwnerId FROM ' + describe.getName() + ' WHERE Id = :recordId LIMIT 1');
+        if (records.isEmpty()) {
+            return null;
+        }
+        Id ownerId = (Id) records[0].get('OwnerId');
+        if (ownerId == null || ownerId.getSObjectType() != User.SObjectType) {
+            return null;
+        }
+        List<User> owners = [SELECT Email FROM User WHERE Id = :ownerId LIMIT 1];
+        return owners.isEmpty() ? null : owners[0].Email;
+    }
+}
