@@ -31,6 +31,12 @@ https://bankunited--devopx.sandbox.lightning.force.com
 
 Authorize Endpoint URL-
 
+
+
+Opportunity o = [SELECT StageName, RecordTypeId, RecordType.DeveloperName
+                 FROM Opportunity WHERE Id = 'PASTE_OPP_ID'];
+System.debug('Stage:      "' + o.StageName + '"');
+System.debug('RecordType: "' + o.RecordType.DeveloperName + '"');
 https://login.microsoftonline.com/common/oauth2/authorize?resource=https://zl2zb.sharepoint.com&prompt=login I
 
 Token Endpoint URL-
