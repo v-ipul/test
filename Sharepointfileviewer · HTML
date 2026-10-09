@@ -9,8 +9,8 @@
             </lightning-button-icon>
         </div>
 
-        <div class="slds-p-horizontal_medium slds-p-bottom_small slds-grid slds-gutters_small sp-upload-bar">
-            <div class="slds-col sp-upload-option">
+        <div class="slds-p-horizontal_medium slds-p-bottom_small slds-grid slds-grid_align-end slds-gutters_small sp-upload-bar">
+            <div class="slds-col slds-no-flex sp-upload-option">
                 <lightning-button
                     label="Apex based method"
                     icon-name="utility:upload"
@@ -22,7 +22,7 @@
                 </p>
             </div>
 
-            <div class="slds-col sp-upload-option">
+            <div class="slds-col slds-no-flex sp-upload-option">
                 <lightning-button
                     label="Browser based method"
                     icon-name="utility:upload"
@@ -100,7 +100,13 @@
                                                 </div>
                                             </div>
                                             <div class="slds-col slds-size_1-of-2 slds-text-align_right">
-                                                
+                                                <lightning-button
+                                                    variant="base"
+                                                    label="Copy to Salesforce"
+                                                    data-version={version.id}
+                                                    data-label={version.label}
+                                                    onclick={handleRestore}>
+                                                </lightning-button>
                                             </div>
                                         </div>
                                     </template>
