@@ -14,6 +14,13 @@ public with sharing class OpportunityFolderTriggerHandler {
     @TestVisible
     private static final String FOLDER_RECORD_TYPE = 'Deposit';
 
+    /**
+     * Reaching this stage removes the Salesforce copies of the Opportunity's files. The
+     * SharePoint copies are left in place, so nothing is actually lost.
+     */
+    @TestVisible
+    private static final String CLEANUP_STAGE = 'Closed Lost';
+
     public static void afterInsert(List<Opportunity> opportunities) {
         try {
             if (SharePointSyncBypass.disabled) {
@@ -48,6 +55,51 @@ public with sharing class OpportunityFolderTriggerHandler {
         } catch (Exception e) {
             // Creating an Opportunity must never fail because SharePoint is misconfigured.
             System.debug(LoggingLevel.ERROR, 'SharePoint folder creation not queued: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Queues removal of the Salesforce file copies when an Opportunity moves into the
+     * cleanup stage. Only on the transition, so re-saving a record that is already
+     * Closed Lost does nothing.
+     */
+    public static void afterUpdate(List<Opportunity> opportunities, Map<Id, Opportunity> oldMap) {
+        try {
+            Map<Id, Schema.RecordTypeInfo> infoById =
+                Opportunity.SObjectType.getDescribe().getRecordTypeInfosById();
+
+            List<Id> toClean = new List<Id>();
+            for (Opportunity opp : opportunities) {
+                if (!CLEANUP_STAGE.equalsIgnoreCase(opp.StageName)) {
+                    continue;
+                }
+                Opportunity previous = oldMap.get(opp.Id);
+                if (previous != null && CLEANUP_STAGE.equalsIgnoreCase(previous.StageName)) {
+                    continue;
+                }
+                if (opp.RecordTypeId == null) {
+                    continue;
+                }
+                Schema.RecordTypeInfo info = infoById.get(opp.RecordTypeId);
+                if (info == null || !FOLDER_RECORD_TYPE.equalsIgnoreCase(info.getDeveloperName())) {
+                    continue;
+                }
+                toClean.add(opp.Id);
+            }
+
+            if (toClean.isEmpty()) {
+                return;
+            }
+            if (Limits.getQueueableJobs() >= Limits.getLimitQueueableJobs()) {
+                System.debug(LoggingLevel.WARN, 'Queueable limit reached, skipping file cleanup for ' +
+                    toClean.size() + ' Opportunity record(s).');
+                return;
+            }
+            System.enqueueJob(new OpportunityFileCleanupQueueable(toClean));
+
+        } catch (Exception e) {
+            // Changing a stage must never fail because of file cleanup.
+            System.debug(LoggingLevel.ERROR, 'File cleanup not queued: ' + e.getMessage());
         }
     }
 }
