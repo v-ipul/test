@@ -7,6 +7,7 @@ import restoreVersionToRecord from '@salesforce/apex/SharePointFileController.re
 import startUpload from '@salesforce/apex/SharePointLargeFileController.startUpload';
 import finishUpload from '@salesforce/apex/SharePointLargeFileController.finishUpload';
 import saveToSalesforce from '@salesforce/apex/SharePointLargeFileController.saveToSalesforce';
+import uploadViaApex from '@salesforce/apex/SharePointLargeFileController.uploadViaApex';
 
 // Microsoft requires every chunk except the last to be a multiple of 320 KiB.
 // 5 MB is 16 x 320 KiB.
@@ -16,6 +17,10 @@ const CHUNK_SIZE = 5 * 1024 * 1024;
 // a link record rather than the bytes. Base64 inflates a file by a third before it is
 // sent, so this sits well below the Apex ceiling rather than at it.
 const SALESFORCE_COPY_MAX = 3.5 * 1024 * 1024;
+
+// The Apex route holds the encoded text, the decoded file and the outbound request in
+// memory at once, so its real ceiling is well below the 6 MB the button advertises.
+const APEX_ROUTE_MAX = 3 * 1024 * 1024;
 
 export default class SharepointFileViewer extends LightningElement {
     @api recordId;
@@ -31,6 +36,7 @@ export default class SharepointFileViewer extends LightningElement {
     isUploading = false;
     uploadProgress = 0;
     uploadFileName;
+    uploadMethod = 'browser';
 
     connectedCallback() {
         this.loadFiles();
@@ -80,8 +86,18 @@ export default class SharepointFileViewer extends LightningElement {
         this.loadFiles();
     }
 
-    handleUploadClick() {
+    handleApexUploadClick() {
+        this.uploadMethod = 'apex';
         this.template.querySelector('input[type="file"]').click();
+    }
+
+    handleBrowserUploadClick() {
+        this.uploadMethod = 'browser';
+        this.template.querySelector('input[type="file"]').click();
+    }
+
+    get isApexRoute() {
+        return this.uploadMethod === 'apex';
     }
 
     /**
@@ -102,6 +118,11 @@ export default class SharepointFileViewer extends LightningElement {
         this.errorMessage = undefined;
 
         try {
+            if (this.isApexRoute) {
+                await this.uploadThroughApex(file);
+                return;
+            }
+
             // 1. Ask SharePoint for a pre-authenticated upload address.
             const session = await startUpload({ recordId: this.recordId, fileName: file.name });
 
@@ -151,6 +172,34 @@ export default class SharepointFileViewer extends LightningElement {
             // Lets the same file be chosen again after a failure.
             input.value = null;
         }
+    }
+
+    /**
+     * Everything happens server side here: one call sends the file to Apex, which uploads
+     * it to SharePoint and creates the Salesforce file.
+     */
+    async uploadThroughApex(file) {
+        if (file.size > APEX_ROUTE_MAX) {
+            throw new Error(
+                `This file is ${this.formatSize(file.size)}. The Apex route handles about ` +
+                `${this.formatSize(APEX_ROUTE_MAX)}; use the browser upload for anything larger.`
+            );
+        }
+
+        // No progress to report - it is a single request - so the bar is pinned while it runs.
+        this.uploadProgress = 50;
+
+        await uploadViaApex({
+            recordId: this.recordId,
+            fileName: file.name,
+            base64Data: await this.toBase64(file)
+        });
+
+        this.uploadProgress = 100;
+        this.toast('Uploaded', `${file.name} is in SharePoint and Salesforce.`, 'success');
+
+        await this.loadFiles();
+        this.dispatchEvent(new RefreshEvent());
     }
 
     async sendChunks(uploadUrl, file) {
@@ -228,6 +277,7 @@ export default class SharepointFileViewer extends LightningElement {
 
     async handleRestore(event) {
         const versionId = event.currentTarget.dataset.version;
+        const versionLabel = event.currentTarget.dataset.label || versionId;
         const file = this.files.find((f) => f.id === this.expandedId);
         if (!file) {
             return;
@@ -243,7 +293,7 @@ export default class SharepointFileViewer extends LightningElement {
             });
             this.toast(
                 'Version restored',
-                `${file.name} version ${versionId} was added to this record as a Salesforce file.`,
+                `${file.name} ${versionLabel} was added to this record as a Salesforce file.`,
                 'success'
             );
             this.dispatchEvent(new RefreshEvent());
