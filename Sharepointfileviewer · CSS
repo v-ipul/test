@@ -12,3 +12,15 @@
 .sp-hidden-file-input {
     display: none;
 }
+
+.sp-upload-bar {
+    border-bottom: 1px solid var(--lwc-colorBorder, #e5e5e5);
+}
+
+.sp-upload-option {
+    text-align: center;
+}
+
+.sp-upload-hint {
+    margin-top: 0.25rem;
+}
