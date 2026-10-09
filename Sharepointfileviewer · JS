@@ -137,18 +137,22 @@ export default class SharepointFileViewer extends LightningElement {
                 fileName: driveItem.name
             });
 
-            // 4. The Salesforce copy: real bytes when small enough, otherwise a link.
+            // 4. The Salesforce copy, but only when the file is small enough to store.
+            //    A large file goes to SharePoint alone - no Salesforce record is created
+            //    for it, not even a link.
             const smallEnough = file.size <= SALESFORCE_COPY_MAX;
-            const saved = await saveToSalesforce({
-                recordId: this.recordId,
-                fileName: driveItem.name,
-                base64Data: smallEnough ? await this.toBase64(file) : null,
-                sharePointUrl: driveItem.webUrl
-            });
+            if (smallEnough) {
+                await saveToSalesforce({
+                    recordId: this.recordId,
+                    fileName: driveItem.name,
+                    base64Data: await this.toBase64(file),
+                    sharePointUrl: driveItem.webUrl
+                });
+            }
 
-            const where = saved.storedInSalesforce
+            const where = smallEnough
                 ? 'SharePoint and Salesforce'
-                : 'SharePoint, with a link added to this record';
+                : 'SharePoint only, because of its size';
 
             // The columns, owner grant and folder link are secondary. The file is safely
             // uploaded by this point, so a problem with one of them is logged for support
