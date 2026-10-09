@@ -67,7 +67,7 @@ public with sharing class SharePointFileController {
                 v.lastModifiedBy = displayName(raw.get('lastModifiedBy'));
                 versions.add(v);
             }
-            return collapseMetadataVersions(versions);
+            return latestOnly(versions);
         } catch (Exception e) {
             throw buildException(e.getMessage());
         }
@@ -131,52 +131,30 @@ public with sharing class SharePointFileController {
     }
 
     /**
-     * Writing the SF Name and SF ID columns updates the document's list item, and
-     * SharePoint records that as a new version even though the file content is unchanged.
-     * A single upload therefore appears as 1.0 and 2.0, which is confusing for users.
+     * Returns only the most recent version.
      *
-     * Consecutive versions of identical size are collapsed into one entry, keeping the
-     * OLDEST of each run - that is the version the content was actually uploaded as. The
-     * surviving entries are then labelled V1, V2 and so on from oldest to newest.
+     * SharePoint records a new version whenever a document's list item changes, and the
+     * integration writes the SF Name and SF ID columns immediately after every upload.
+     * A single upload therefore always produces two SharePoint versions with identical
+     * content, which is confusing to look at and means nothing to a user.
      *
-     * This is a heuristic: a genuine re-upload of a file whose size has not changed by a
-     * single byte would also be collapsed. For documents that are edited rather than
-     * replaced wholesale, size always differs, so this holds in practice.
+     * Showing the latest avoids guessing which versions are real and which are an
+     * artefact of the column write. The real SharePoint version id is preserved, so
+     * copying the version back to Salesforce still works.
      *
-     * Graph returns versions newest first, and that order is preserved on the way out.
+     * To show the full history instead, return newestFirst unchanged and number the
+     * labels downward from newestFirst.size().
      */
     @TestVisible
-    private static List<VersionMetadata> collapseMetadataVersions(List<VersionMetadata> newestFirst) {
-        if (newestFirst.size() < 2) {
-            applyLabels(newestFirst);
-            return newestFirst;
+    private static List<VersionMetadata> latestOnly(List<VersionMetadata> newestFirst) {
+        List<VersionMetadata> result = new List<VersionMetadata>();
+        if (newestFirst.isEmpty()) {
+            return result;
         }
-
-        List<VersionMetadata> kept = new List<VersionMetadata>();
-        for (Integer i = 0; i < newestFirst.size(); i++) {
-            VersionMetadata current = newestFirst[i];
-            Boolean olderTwinExists = (i + 1 < newestFirst.size())
-                && newestFirst[i + 1].size == current.size;
-
-            // Skip this one: an older version of the same size holds the same content.
-            if (!olderTwinExists) {
-                kept.add(current);
-            }
-        }
-        applyLabels(kept);
-        return kept;
-    }
-
-    /**
-     * Numbers the surviving versions V1 upwards from the oldest, so the user sees a count
-     * of real uploads rather than SharePoint's internal version numbers.
-     */
-    private static void applyLabels(List<VersionMetadata> newestFirst) {
-        Integer number = newestFirst.size();
-        for (VersionMetadata v : newestFirst) {
-            v.label = 'V' + number;
-            number--;
-        }
+        VersionMetadata latest = newestFirst[0];
+        latest.label = 'Version 1';
+        result.add(latest);
+        return result;
     }
 
     /**
