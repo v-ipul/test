@@ -1,5 +1,8 @@
-trigger OpportunityFolderTrigger on Opportunity (after insert) {
+trigger OpportunityFolderTrigger on Opportunity (after insert, after update) {
     if (Trigger.isAfter && Trigger.isInsert) {
         OpportunityFolderTriggerHandler.afterInsert(Trigger.new);
+    }
+    if (Trigger.isAfter && Trigger.isUpdate) {
+        OpportunityFolderTriggerHandler.afterUpdate(Trigger.new, Trigger.oldMap);
     }
 }
