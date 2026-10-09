@@ -1,0 +1,99 @@
+/**
+ * Removes the Salesforce copies of files attached to an Opportunity once it is marked
+ * Closed Lost. The SharePoint copies are left alone, so the documents still exist and
+ * only Salesforce storage is released.
+ *
+ * Runs asynchronously so a user changing the stage is never blocked, and so a failure
+ * here cannot roll back their edit.
+ */
+public class OpportunityFileCleanupQueueable implements Queueable {
+
+    private List<Id> pending;
+
+    public OpportunityFileCleanupQueueable(List<Id> recordIds) {
+        this.pending = recordIds == null ? new List<Id>() : recordIds;
+    }
+
+    public void execute(QueueableContext context) {
+        if (pending.isEmpty()) {
+            return;
+        }
+
+        // Every link from the Opportunities being cleaned up.
+        List<ContentDocumentLink> ourLinks = [
+            SELECT Id, ContentDocumentId, LinkedEntityId
+            FROM ContentDocumentLink
+            WHERE LinkedEntityId IN :pending
+        ];
+        if (ourLinks.isEmpty()) {
+            return;
+        }
+
+        Set<Id> documentIds = new Set<Id>();
+        for (ContentDocumentLink link : ourLinks) {
+            documentIds.add(link.ContentDocumentId);
+        }
+
+        // A file can be shared with more than one record. Count the links each document
+        // has to records other than the Opportunities being cleaned, ignoring links to
+        // Users, which exist for the uploader rather than representing a real sharing.
+        Map<Id, Integer> otherLinkCount = new Map<Id, Integer>();
+        for (Id documentId : documentIds) {
+            otherLinkCount.put(documentId, 0);
+        }
+        for (ContentDocumentLink link : [
+                SELECT ContentDocumentId, LinkedEntityId
+                FROM ContentDocumentLink
+                WHERE ContentDocumentId IN :documentIds]) {
+
+            if (pending.contains(link.LinkedEntityId)) {
+                continue;
+            }
+            if (link.LinkedEntityId.getSObjectType() == User.SObjectType) {
+                continue;
+            }
+            otherLinkCount.put(link.ContentDocumentId, otherLinkCount.get(link.ContentDocumentId) + 1);
+        }
+
+        List<ContentDocument> toDelete = new List<ContentDocument>();
+        List<ContentDocumentLink> toUnlink = new List<ContentDocumentLink>();
+
+        for (ContentDocumentLink link : ourLinks) {
+            if (otherLinkCount.get(link.ContentDocumentId) > 0) {
+                // Shared with something else, so only this Opportunity's link is removed.
+                toUnlink.add(link);
+            } else {
+                toDelete.add(new ContentDocument(Id = link.ContentDocumentId));
+            }
+        }
+
+        // allOrNone false so one locked record does not discard the whole batch.
+        if (!toUnlink.isEmpty()) {
+            logFailures(Database.delete(toUnlink, false), 'unlink');
+        }
+        if (!toDelete.isEmpty()) {
+            logFailures(Database.delete(deduplicate(toDelete), false), 'delete');
+        }
+    }
+
+    /**
+     * One document can be linked to several of the Opportunities in this batch, which
+     * would otherwise produce a duplicate id in the delete list.
+     */
+    private static List<ContentDocument> deduplicate(List<ContentDocument> documents) {
+        Map<Id, ContentDocument> byId = new Map<Id, ContentDocument>();
+        for (ContentDocument doc : documents) {
+            byId.put(doc.Id, doc);
+        }
+        return byId.values();
+    }
+
+    private static void logFailures(List<Database.DeleteResult> results, String action) {
+        for (Database.DeleteResult result : results) {
+            if (!result.isSuccess()) {
+                System.debug(LoggingLevel.ERROR, 'Could not ' + action + ' file ' +
+                    result.getId() + ': ' + result.getErrors()[0].getMessage());
+            }
+        }
+    }
+}
