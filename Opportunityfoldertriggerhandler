@@ -1,0 +1,68 @@
+/**
+ * Decides which newly created Opportunities should get a SharePoint folder straight away.
+ *
+ * Runs synchronously inside the user's save, so it does nothing but filter and enqueue.
+ * No callouts, no DML. An exception here would roll back the Opportunity itself, which is
+ * why the whole body is guarded.
+ */
+public with sharing class OpportunityFolderTriggerHandler {
+
+    public static void afterInsert(List<Opportunity> opportunities) {
+        try {
+            if (SharePointSyncBypass.disabled) {
+                return;
+            }
+            SharePoint_Setting__mdt cfg = SharePointConfig.get();
+            if (cfg.Create_Folder_On_Insert__c != true) {
+                return;
+            }
+
+            Set<String> wantedRecordTypes = recordTypeNames(cfg.Folder_Record_Types__c);
+            Map<Id, Schema.RecordTypeInfo> infoById =
+                Opportunity.SObjectType.getDescribe().getRecordTypeInfosById();
+
+            List<Id> toProcess = new List<Id>();
+            for (Opportunity opp : opportunities) {
+                // An empty setting means every record type qualifies.
+                if (!wantedRecordTypes.isEmpty()) {
+                    if (opp.RecordTypeId == null) {
+                        continue;
+                    }
+                    Schema.RecordTypeInfo info = infoById.get(opp.RecordTypeId);
+                    if (info == null || !wantedRecordTypes.contains(info.getDeveloperName().toLowerCase())) {
+                        continue;
+                    }
+                }
+                toProcess.add(opp.Id);
+            }
+
+            if (toProcess.isEmpty()) {
+                return;
+            }
+            if (Limits.getQueueableJobs() >= Limits.getLimitQueueableJobs()) {
+                System.debug(LoggingLevel.WARN,
+                    'Queueable limit reached, skipping folder creation for ' + toProcess.size() + ' Opportunity record(s).');
+                return;
+            }
+            System.enqueueJob(new SharePointFolderQueueable(toProcess));
+
+        } catch (Exception e) {
+            // Creating an Opportunity must never fail because SharePoint is misconfigured.
+            System.debug(LoggingLevel.ERROR, 'SharePoint folder creation not queued: ' + e.getMessage());
+        }
+    }
+
+    @TestVisible
+    private static Set<String> recordTypeNames(String raw) {
+        Set<String> result = new Set<String>();
+        if (String.isBlank(raw)) {
+            return result;
+        }
+        for (String part : raw.split(',')) {
+            if (String.isNotBlank(part)) {
+                result.add(part.trim().toLowerCase());
+            }
+        }
+        return result;
+    }
+}
