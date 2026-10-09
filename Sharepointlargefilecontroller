@@ -1,61 +1,20 @@
 /**
- * Supports uploading large files straight from the browser to SharePoint.
+ * Supports uploading files straight from the browser to SharePoint.
  *
- * The file never passes through Apex, so the 12 MB asynchronous heap limit that caps
- * the normal sync at roughly 6 MB does not apply here. Apex only asks SharePoint for a
- * one-time upload address, then does the follow-up work once the browser reports the
- * upload finished.
+ * The file never passes through Apex, so the 12 MB asynchronous heap limit that caps the
+ * automatic sync at roughly 6 MB does not apply. Apex only asks SharePoint for a one-time
+ * upload address, then does the follow-up work once the browser reports the upload done.
  *
- * Nothing in this class modifies the existing sync classes. It reads configuration
- * through SharePointConfig and reuses the public methods on SharePointService and
- * SharePointOutboundQueueable.
+ * Three methods, matching exactly what sharepointFileViewer imports:
+ *   startUpload      - ask SharePoint for a pre-authenticated upload address
+ *   finishUpload     - columns, owner access, folder link on the record
+ *   saveToSalesforce - the Salesforce copy: real bytes when small, a link when not
  *
- * NOTE: a file uploaded this way lands in SharePoint only. It is not stored in
- * Salesforce, because a file above the heap limit cannot be written through Apex either.
+ * Nothing here modifies the existing sync classes.
  */
 public with sharing class SharePointLargeFileController {
 
     public class LargeUploadException extends Exception {}
-
-    /**
-     * Details of a file the platform has just written to Salesforce.
-     *
-     * lightning-file-upload streams the file straight into Salesforce without passing
-     * through Apex, so the 12 MB heap limit does not apply on the way in. The component
-     * uses this to decide whether the normal sync will handle the file or whether it has
-     * to push it to SharePoint from the browser.
-     */
-    @AuraEnabled
-    public static UploadedFile getUploadedFile(String contentDocumentId) {
-        if (String.isBlank(contentDocumentId)) {
-            throw buildException('No file was uploaded.');
-        }
-        List<ContentVersion> versions = [
-            SELECT Id, Title, PathOnClient, FileExtension, ContentSize
-            FROM ContentVersion
-            WHERE ContentDocumentId = :contentDocumentId AND IsLatest = true
-            LIMIT 1
-        ];
-        if (versions.isEmpty()) {
-            throw buildException('The uploaded file could not be found.');
-        }
-        ContentVersion cv = versions[0];
-
-        UploadedFile result = new UploadedFile();
-        result.contentVersionId = cv.Id;
-        result.size = cv.ContentSize;
-        result.maxSyncSize = SharePointConfig.maxFileSizeBytes();
-
-        String name = String.isNotBlank(cv.PathOnClient) ? cv.PathOnClient : cv.Title;
-        if (String.isNotBlank(cv.FileExtension) && !name.toLowerCase().endsWith('.' + cv.FileExtension.toLowerCase())) {
-            name += '.' + cv.FileExtension;
-        }
-        result.fileName = name;
-
-        // Same-origin path the browser can read with the user's existing session.
-        result.downloadUrl = '/sfc/servlet.shepherd/version/download/' + cv.Id;
-        return result;
-    }
 
     /**
      * Asks SharePoint for an upload session. The returned uploadUrl is pre-authenticated
@@ -77,18 +36,18 @@ public with sharing class SharePointLargeFileController {
             String url = driveBase() + '/root:/' + encodePath(folderPath) + '/' +
                          encodeSegment(safeName) + ':/createUploadSession';
 
-            Map<String, Object> payload = new Map<String, Object>{
+            String payload = JSON.serialize(new Map<String, Object>{
                 'item' => new Map<String, Object>{
                     '@microsoft.graph.conflictBehavior' => 'rename'
                 }
-            };
+            });
 
-            HttpResponse res = send('POST', url, JSON.serialize(payload));
+            HttpResponse res = send('POST', url, payload);
 
-            // The folder does not exist until the record's first sync, so create it and retry.
+            // The record folder does not exist until the first sync, so create it and retry.
             if (res.getStatusCode() == 404) {
                 SharePointService.ensureFolder(folderPath);
-                res = send('POST', url, JSON.serialize(payload));
+                res = send('POST', url, payload);
             }
             if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
                 throw new LargeUploadException('Could not start the upload (HTTP ' +
@@ -110,22 +69,22 @@ public with sharing class SharePointLargeFileController {
     }
 
     /**
-     * Called by the component once the last chunk has been accepted. Applies the same
-     * follow-up steps the normal sync applies: the library columns, the owner grant, and
-     * the folder link on the record.
+     * Called once the last chunk has been accepted. Applies the same follow-up steps the
+     * automatic sync applies: library columns, owner grant, folder link on the record.
      *
      * Each step is guarded. The file is already safely in SharePoint by this point, so a
-     * failure here is reported rather than treated as an upload failure.
+     * failure here is reported as a warning rather than an upload failure.
+     *
+     * Returns null on success, or a short description of what did not work.
      */
     @AuraEnabled
-    public static String finishUpload(Id recordId, String itemId, String fileName, String webUrl, Id contentVersionId) {
+    public static String finishUpload(Id recordId, String itemId, String fileName) {
         if (recordId == null || String.isBlank(itemId)) {
             throw buildException('The upload did not return a SharePoint item.');
         }
         List<String> problems = new List<String>();
         SharePoint_Setting__mdt cfg = SharePointConfig.get();
 
-        // 1. Library columns
         try {
             Map<String, Object> fields = new Map<String, Object>();
             if (String.isNotBlank(cfg.Column_File_Name__c)) {
@@ -137,126 +96,46 @@ public with sharing class SharePointLargeFileController {
             SharePointService.setListItemFields(itemId, fields);
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Columns not set: ' + e.getMessage());
-            problems.add('columns not set');
+            problems.add('the SharePoint columns were not set');
         }
 
-        // 2. Owner access to the record folder
         if (cfg.Grant_Owner_Folder_Access__c == true) {
             try {
-                String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
                 String ownerEmail = resolveOwnerEmail(recordId);
                 if (String.isNotBlank(ownerEmail)) {
-                    SharePointService.grantAccessByPath(folderPath, ownerEmail, cfg.Owner_Access_Role__c);
+                    SharePointService.grantAccessByPath(
+                        SharePointOutboundQueueable.buildFolderPath(recordId),
+                        ownerEmail,
+                        cfg.Owner_Access_Role__c);
                 }
             } catch (Exception e) {
                 System.debug(LoggingLevel.ERROR, 'Owner access not granted: ' + e.getMessage());
-                problems.add('owner access not granted');
+                problems.add('the owner was not granted folder access');
             }
         }
 
-        // 3. Folder link on the record
         try {
             writeFolderUrl(recordId, cfg.Record_Folder_URL_Field__c);
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Folder link not saved: ' + e.getMessage());
-            problems.add('folder link not saved');
-        }
-
-        // 4. The Salesforce copy
-        try {
-            if (contentVersionId != null) {
-                // The file is already in Salesforce Files, uploaded by the platform.
-                // Stamp it so it is traceable and so the outbound sync leaves it alone.
-                stampSalesforceCopy(contentVersionId, webUrl);
-            } else if (cfg.Create_Salesforce_Link__c == true) {
-                createSalesforceLink(recordId, fileName, webUrl);
-            }
-        } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'Salesforce copy not updated: ' + e.getMessage());
-            problems.add('Salesforce file not updated');
+            problems.add('the folder link was not saved to the record');
         }
 
         return problems.isEmpty() ? null : String.join(problems, ', ');
     }
 
     /**
-     * Marks the Salesforce copy with the SharePoint link. The bytes are already in
-     * Salesforce, put there by the platform rather than by Apex.
-     */
-    private static void stampSalesforceCopy(Id contentVersionId, String webUrl) {
-        Boolean previousBypass = SharePointSyncBypass.disabled;
-        SharePointSyncBypass.disabled = true;
-        try {
-            update new ContentVersion(
-                Id = contentVersionId,
-                SharePoint_Item_URL__c = webUrl,
-                SharePoint_Sync_Status__c = 'Uploaded directly to SharePoint ' + Datetime.now().format()
-            );
-        } finally {
-            SharePointSyncBypass.disabled = previousBypass;
-        }
-    }
-
-    /**
-     * Adds the document to the record's Salesforce Files list as a LINK rather than a
-     * copy of the bytes. Used only when no Salesforce copy exists.
-     *
-     * A ContentVersion with ContentUrl set instead of VersionData is a link-type file:
-     * no size limit, appears in the Files related list like any other file, and opens
-     * the SharePoint document when clicked. Storing the bytes themselves is not possible
-     * here, because a file large enough to need a browser-direct upload is also too
-     * large for Apex to write into Salesforce.
-     *
-     * SharePoint_Item_URL__c is stamped so the outbound sync treats it as already
-     * synced, and the bypass flag stops the trigger firing on the insert.
-     */
-    private static void createSalesforceLink(Id recordId, String fileName, String webUrl) {
-        if (String.isBlank(webUrl)) {
-            throw new LargeUploadException('SharePoint did not return a link for this document.');
-        }
-        if (!Schema.SObjectType.ContentVersion.isCreateable() ||
-            !Schema.SObjectType.ContentDocumentLink.isCreateable()) {
-            throw new LargeUploadException('You do not have permission to add files to this record.');
-        }
-
-        Boolean previousBypass = SharePointSyncBypass.disabled;
-        SharePointSyncBypass.disabled = true;
-        try {
-            ContentVersion cv = new ContentVersion(
-                Title = String.isBlank(fileName) ? 'SharePoint document' : fileName,
-                ContentUrl = webUrl,
-                SharePoint_Item_URL__c = webUrl,
-                SharePoint_Sync_Status__c = 'Uploaded directly to SharePoint ' + Datetime.now().format()
-            );
-            insert cv;
-
-            Id contentDocumentId = [
-                SELECT ContentDocumentId FROM ContentVersion WHERE Id = :cv.Id LIMIT 1
-            ].ContentDocumentId;
-
-            insert new ContentDocumentLink(
-                ContentDocumentId = contentDocumentId,
-                LinkedEntityId = recordId,
-                ShareType = 'V',
-                Visibility = 'AllUsers'
-            );
-        } finally {
-            SharePointSyncBypass.disabled = previousBypass;
-        }
-    }
-
-    /**
      * Creates the Salesforce copy after the file has landed in SharePoint.
      *
-     * base64Data present  -> a real Salesforce file holding the bytes.
-     * base64Data blank    -> a link record pointing at the SharePoint document, which
-     *                        appears in the record's Files list and opens the original.
+     * base64Data present -> a real Salesforce file holding the bytes.
+     * base64Data blank   -> a link record pointing at the SharePoint document, which
+     *                       appears in the record's Files list and opens the original.
      *
      * The component decides which, because only it knows the file size, and a file above
      * a few MB cannot be passed through an Apex request at all.
      *
      * Either way the record carries the SharePoint URL, which stops the outbound trigger
-     * from pushing the file back to SharePoint and creating a duplicate.
+     * from pushing the file back and creating a duplicate.
      */
     @AuraEnabled
     public static SaveResult saveToSalesforce(Id recordId, String fileName, String base64Data, String sharePointUrl) {
@@ -276,7 +155,6 @@ public with sharing class SharePointLargeFileController {
                 Title = fileName,
                 SharePoint_Item_URL__c = sharePointUrl
             );
-
             SaveResult result = new SaveResult();
 
             if (String.isNotBlank(base64Data)) {
@@ -285,11 +163,11 @@ public with sharing class SharePointLargeFileController {
                 cv.SharePoint_Sync_Status__c = 'Uploaded to SharePoint and stored in Salesforce';
                 result.storedInSalesforce = true;
             } else {
-                // A link-type file: no bytes, but it shows in the Files list and opens
-                // the SharePoint document.
                 if (String.isBlank(sharePointUrl)) {
                     throw new LargeUploadException('No SharePoint link was supplied for the Salesforce record.');
                 }
+                // A link-type file: no bytes, but it shows in the Files list and opens
+                // the SharePoint document.
                 cv.ContentUrl = sharePointUrl;
                 cv.SharePoint_Sync_Status__c = 'Stored in SharePoint, linked from Salesforce';
                 result.storedInSalesforce = false;
@@ -320,6 +198,63 @@ public with sharing class SharePointLargeFileController {
     }
 
     /**
+     * Uploads a small file to SharePoint through Apex, then stores it in Salesforce, in
+     * one call.
+     *
+     * The file arrives as text, is decoded here, and is sent to SharePoint from the
+     * server. That means the whole file sits in Apex memory, so this path is limited to
+     * small files - see MAX_APEX_UPLOAD_BYTES below.
+     *
+     * The browser based path exists precisely because this one cannot handle large files.
+     */
+    @AuraEnabled
+    public static SaveResult uploadViaApex(Id recordId, String fileName, String base64Data) {
+        if (recordId == null) {
+            throw buildException('This component has to be placed on a record page.');
+        }
+        if (String.isBlank(fileName) || String.isBlank(base64Data)) {
+            throw buildException('No file was supplied.');
+        }
+        try {
+            Blob content = EncodingUtil.base64Decode(base64Data);
+
+            if (content.size() > MAX_APEX_UPLOAD_BYTES) {
+                throw new LargeUploadException('This file is ' + content.size() +
+                    ' bytes, which is too large for the Apex route. Use the browser upload instead.');
+            }
+
+            String folderPath = SharePointOutboundQueueable.buildFolderPath(recordId);
+            String safeName = SharePointService.sanitize(fileName);
+
+            SharePointService.UploadResult upload =
+                SharePointService.uploadFile(folderPath, safeName, content);
+
+            String itemId = (String) upload.item.get('id');
+            String storedName = (String) upload.item.get('name');
+            String webUrl = (String) upload.item.get('webUrl');
+            if (String.isBlank(storedName)) {
+                storedName = safeName;
+            }
+
+            // Reuses the same follow-up steps as the browser route so both behave alike.
+            finishUpload(recordId, itemId, storedName);
+
+            return saveToSalesforce(recordId, storedName, base64Data, webUrl);
+
+        } catch (Exception e) {
+            throw buildException(e.getMessage());
+        }
+    }
+
+    /**
+     * Apex holds the encoded text, the decoded file, and the outbound request body at the
+     * same time, against a 6 MB allowance. 3 MB is the point where all three still fit
+     * for any file type; pushing closer to 6 MB fails unpredictably depending on how
+     * compressible the file is.
+     */
+    private static final Integer MAX_APEX_UPLOAD_BYTES = 3 * 1024 * 1024;
+
+    /**
      * Duplicated from the queueable, whose copy is private. OwnerId can point at a Queue
      * on some objects, so the type is checked before the User is read.
      */
@@ -342,6 +277,10 @@ public with sharing class SharePointLargeFileController {
         return owners.isEmpty() ? null : owners[0].Email;
     }
 
+    /**
+     * Writes the folder link onto the record, only when the field is currently blank, so
+     * a value someone set by hand is never replaced and the common case costs no callout.
+     */
     private static void writeFolderUrl(Id recordId, String fieldName) {
         if (String.isBlank(fieldName)) {
             return;
@@ -375,8 +314,8 @@ public with sharing class SharePointLargeFileController {
 
     /**
      * Builds the drive base independently of SharePointService, whose equivalent method
-     * is private. This is deliberate duplication so that adding large file upload
-     * required no edit to the existing sync classes.
+     * is private. Deliberate duplication, so that adding large file upload required no
+     * edit to the existing sync classes.
      */
     @TestVisible
     private static String cachedDriveBase;
@@ -447,23 +386,15 @@ public with sharing class SharePointLargeFileController {
         return e;
     }
 
-    public class UploadedFile {
-        @AuraEnabled public Id contentVersionId;
-        @AuraEnabled public String fileName;
-        @AuraEnabled public Long size;
-        @AuraEnabled public Long maxSyncSize;
-        @AuraEnabled public String downloadUrl;
-    }
-
-    public class SaveResult {
-        @AuraEnabled public Id contentVersionId;
-        @AuraEnabled public Boolean storedInSalesforce;
-    }
-
     public class UploadSession {
         @AuraEnabled public String uploadUrl;
         @AuraEnabled public String expirationDateTime;
         @AuraEnabled public String fileName;
         @AuraEnabled public String folderPath;
+    }
+
+    public class SaveResult {
+        @AuraEnabled public Id contentVersionId;
+        @AuraEnabled public Boolean storedInSalesforce;
     }
 }
