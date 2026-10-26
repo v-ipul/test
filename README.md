@@ -44,8 +44,9 @@ Token Endpoint URL-
 https:/login.microsoftonline.com/common/oauth2/tokenoauth2%2Ftoken&v=NgKZHXPqS6w)
 
 
-Issue: My user was created with .invalid at the end of my email, which is standard after a sandbox refresh. Because of this, the password setup email never reached me.
-Blocker: To fix the email, Salesforce asks me to log in first, but I don’t have a password, so I can’t fix it myself.
-Fix needed (admin of that org):
-Correct the email on my user record (remove .invalid).
-Set a temporary password for me using System.setPassword() in the Developer Console, or use Reset Password once the email is corrected.
+Hi,
+
+Quick update on the Salesforce login issue:
+
+Resolved: Abh (architect) created a new user for me, and I’ve logged in successfully.
+Old user: It still has the .invalid email and can be deactivated if it’s not needed.
