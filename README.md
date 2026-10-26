@@ -1,52 +1,14 @@
-# test
-demo test
- update 1
+1. Why (the business problem)
 
-Two new metadata fields — Grant_Owner_Folder_Access__c (Checkbox), Owner_Access_Role__c (Text 20)
-   =IF(TRIM(F2)="","",IF(RIGHT(TRIM(F2),8)=".invalid",TRIM(F2),TRIM(F2)&".invalid"))
-   SELECT FIELDS(ALL) FROM Lead WHERE IsConverted = false LIMIT 200
+Today RMs price deals in PrecisionLender, which creates a Deal in Salesforce. CPOs don’t use that Deal; they do underwriting in eCAM and re-enter the data by hand.
+The future state moves CAM into Salesforce, so the Deal has to become the central workspace for the whole lending lifecycle, handing off from RM to CPO to LCO.
+Loan Inquiry is the first building block. It lets a loan request be tracked on its own, separately from the Opportunity and the Deal.
 
+2. What this story delivers
 
-SELECT Id, Name, Status, CreatedBy.Name, CreatedDate, LastModifiedBy.Name, LastModifiedDate
-FROM ApexClass
-ORDER BY Name
-
-
-One required Setup step
-
-Setup → CSP Trusted Sites → New:
-
-Trusted Site Name: SharePoint_Upload
-URL: https://bankunited.sharepoint.com
-Active: checked
-Context: All
-Under "CSP Directives", tick connect-src
-
-SELECT Title, ContentUrl, ContentSize, SharePoint_Sync_Status__c
-FROM ContentVersion
-WHERE Title LIKE '50mb%' AND IsLatest = true
-
-https://bankunited--devopx.sandbox.lightning.force.com
-
-
-Authorize Endpoint URL-
-
-
-
-Opportunity o = [SELECT StageName, RecordTypeId, RecordType.DeveloperName
-                 FROM Opportunity WHERE Id = 'PASTE_OPP_ID'];
-System.debug('Stage:      "' + o.StageName + '"');
-System.debug('RecordType: "' + o.RecordType.DeveloperName + '"');
-https://login.microsoftonline.com/common/oauth2/authorize?resource=https://zl2zb.sharepoint.com&prompt=login I
-
-Token Endpoint URL-
-
-https:/login.microsoftonline.com/common/oauth2/tokenoauth2%2Ftoken&v=NgKZHXPqS6w)
-
-
-Hi,
-
-Quick update on the Salesforce login issue:
-
-Resolved: Abh (architect) created a new user for me, and I’ve logged in successfully.
-Old user: It still has the .invalid email and can be deactivated if it’s not needed.
+A new custom object, Loan Inquiry (BKU_Loan_Inquiry__c), with reports enabled.
+8 fields: an auto number (LI-000000), Name, Origination Source (OnePath/OPX/Commercial Cards), Loan Stage (11 stages from Inquiry Submitted to Paid off), and Amount as a formula from the Opportunity.
+3 relationships:
+Master-detail to Opportunity, so Opportunity is the parent.
+Lookup to Relationship (Account).
+Lookup to PL Deal.
