@@ -1,3 +1,6 @@
+Does the Solution Approach note mean we should restrict the Opportunity field to OnePATHE record types with a lookup filter, or only that later automation should filter on OnePATHE?
+
+
 Field 2: Loan Inquiry (Name)
 
 This field already exists; it was created along with the object.
