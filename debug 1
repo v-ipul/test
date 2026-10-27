@@ -9,3 +9,6 @@ Allows Wholesale Banking RM users to view Loan Inquiry records, and edit the Loa
 BKU Wholesale Banking (group)
 
 Allows Wholesale Banking users access to Loan Inquiry and Opportunity through the BKU WB CPO and BKU WB RM permission sets.
+
+SELECT Name, RecordType.Name, RecordType.DeveloperName
+FROM Opportunity WHERE Id = 'your-opp-id'
