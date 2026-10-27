@@ -1,89 +1,11 @@
-Does the Solution Approach note mean we should restrict the Opportunity field to OnePATHE record types with a lookup filter, or only that later automation should filter on OnePATHE?
+BKU WB CPO
 
+Allows Wholesale Banking CPO users to view and edit Loan Inquiry records, and view Opportunity records.
 
-Field 2: Loan Inquiry (Name)
+BKU WB RM
 
-This field already exists; it was created along with the object.
+Allows Wholesale Banking RM users to view Loan Inquiry records, and edit the Loan Inquiry field on Opportunity.
 
-Fields & Relationships → click Loan Inquiry Name → Edit.
-Field Label: Loan Inquiry. The type stays Text(80), which is fixed.
-Save. The concatenation logic (Opp Type + Closing date) isn’t part of this step; it’s marked TBD in the story.
+BKU Wholesale Banking (group)
 
-Field 1: Loan Inquiry Number
-
-New → Auto Number.
-Field Label: Loan Inquiry Number. Field Name: BKU_Loan_Inquiry_No.
-Display Format: LI-{000000}. Starting Number: 1.
-Leave “Generate Auto Number for existing records” unticked; there are no records yet.
-Set FLS and layout, then Save & New. The field is read-only automatically.
-
-Field 3: Loan Origination Source
-
-New → Picklist.
-Field Label: Loan Origination Source. Field Name: BKU_Loan_Origination_Source.
-Choose “Enter values, with each value separated by a new line”:
-   OnePath
-   OPX
-   Commercial Cards
-Tick “Restrict picklist to the values defined in the value set.”
-Set FLS and layout, then Save & New.
-
-Field 4: Loan Stage
-
-New → Picklist.
-Field Label: Loan Stage. Field Name: BKU_Loan_Stage.
-Enter the values in this order:
-   Inquiry Submitted
-   Proposal Issued
-   Proposal Accepted
-   Underwriting
-   Submitted for Approval
-   Approved
-   Loan Closing
-   Booking
-   Booked
-   WAR
-   Paid off
-Tick Restrict picklist.
-Optionally, ask whether the default should be Inquiry Submitted. The story doesn’t say.
-Set FLS and layout, then Save & New.
-
-Field 7: Opportunity (master-detail)
-
-New → Master-Detail Relationship → Related To: Opportunity.
-Field Label: Opportunity. Field Name: BKU_Opportunity.
-Sharing Setting: Read/Write. Users who can edit the Opportunity can then edit its Loan Inquiries.
-“Allow reparenting”: leave it unticked for now and confirm with your lead.
-Next → FLS. Master-detail fields are always required, so you only set visibility here. Then the layout.
-Related list on Opportunity: the wizard asks which Opportunity layouts should get the Loan Inquiries related list. Untick all of them unless your lead says otherwise, because Opportunity has a lot of layouts.
-Save.
-Add the OnePATHE filter. Open the new Opportunity field → Edit → Lookup Filter → Show Filter Settings.
-Criteria: Opportunity: Opportunity Record Type equals the 3 OnePATHE record types (New/Initial Funding; Pay-Down, Pay-Off or Advance; Renewal, Mod or Extension).
-Filter Type: Required.
-Error message: “Loan Inquiry can only be created for OnePATHE opportunities.”
-Save.
-
-Field 6: Deal
-
-New → Lookup Relationship → Related To: PL Deal. Check its exact label in the list.
-Field Label: Deal. Field Name: BKU_Deal.
-Not required. If the lookup record is deleted: “Clear the value of this field.”
-Set FLS and layout.
-For the related list on Deal layouts, untick all for now. Save & New.
-
-Field 8: Relationship
-
-New → Lookup Relationship → Related To: Account. It may show as “Relationship” because Account is relabelled.
-Field Label: Relationship. Field Name: BKU_Relationship.
-Not required. If the lookup record is deleted: “Clear the value of this field.”
-Set FLS and layout.
-For the related list on Relationship layouts, untick all for now. Save & New.
-
-Field 5: Amount
-
-New → Formula.
-Field Label: Amount. Field Name: BKU_Amount. Return Type: Currency. Decimal Places: 2.
-Next → Advanced Formula and enter:
-   BKU_Opportunity__r.Amount
-Click Check Syntax. Blank Field Handling: “Treat blank fields as blanks.”
-Set FLS and layout, then Save.
+Allows Wholesale Banking users access to Loan Inquiry and Opportunity through the BKU WB CPO and BKU WB RM permission sets.
