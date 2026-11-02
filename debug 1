@@ -12,3 +12,21 @@ Allows Wholesale Banking users access to Loan Inquiry and Opportunity through th
 
 SELECT Name, RecordType.Name, RecordType.DeveloperName
 FROM Opportunity WHERE Id = 'your-opp-id'
+
+SFWB-71: Loan Inquiry object
+
+CustomObject: BKU_Loan_Inquiry__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Loan_Inquiry_No__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Loan_Origination_Source__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Stage__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Amount__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Deal__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Opportunity__c
+CustomField: BKU_Loan_Inquiry__c.BKU_Relationship__c
+Layout: BKU_Loan_Inquiry__c-Loan Inquiry Layout
+CustomTab: BKU_Loan_Inquiry__c
+
+SFWB-74: Permission sets
+
+PermissionSet: BKU_WB_CPO
+PermissionSet: BKU_WB_RM
