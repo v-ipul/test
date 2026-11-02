@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>BKU_Loan_Inquiry__c</members>
+        <name>CustomObject</name>
+    </types>
+    <types>
+        <members>BKU_Loan_Inquiry__c.BKU_Loan_Inquiry_No__c</members>
+        <members>BKU_Loan_Inquiry__c.BKU_Loan_Origination_Source__c</members>
+        <members>BKU_Loan_Inquiry__c.BKU_Stage__c</members>
+        <members>BKU_Loan_Inquiry__c.BKU_Amount__c</members>
+        <members>BKU_Loan_Inquiry__c.BKU_Deal__c</members>
+        <members>BKU_Loan_Inquiry__c.BKU_Opportunity__c</members>
+        <members>BKU_Loan_Inquiry__c.BKU_Relationship__c</members>
+        <name>CustomField</name>
+    </types>
+    <types>
+        <members>BKU_Loan_Inquiry__c-Loan Inquiry Layout</members>
+        <name>Layout</name>
+    </types>
+    <types>
+        <members>BKU_Loan_Inquiry__c</members>
+        <name>CustomTab</name>
+    </types>
+    <types>
+        <members>WB_User</members>
+        <name>CustomPermission</name>
+    </types>
+    <types>
+        <members>BKU_WB_CPO</members>
+        <members>BKU_WB_RM</members>
+        <name>PermissionSet</name>
+    </types>
+    <version>62.0</version>
+</Package>
