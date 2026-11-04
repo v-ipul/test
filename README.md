@@ -14,3 +14,11 @@ Lookup to Relationship (Account).
 Lookup to PL Deal.
 
 Hi, thanks for checking in! It’s been resolved now. Abh created a new user for me and I’m able to log in.
+
+
+
+Thanks for clarifying, Mahesh.
+
+Since the decision from the defect discussion with Abhi & Pankaj is to keep the Loan Inquiry lookup on Opportunity read-only (populated by the Flow), Story 74 still says BKU WB RM should have Edit access to that field.
+
+Mariela is currently testing Story 74, so she might raise a defect when she sees the field is read-only. Should I ask her to update Story 74 so the Opportunity → Loan Inquiry field is read-only for BKU WB RM? That way the story matches what's configured in DEVWB/INT.
