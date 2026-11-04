@@ -1,12 +1,11 @@
-Boolean isPersonAccountEnabled = Schema.sObjectType.Account.fields.getMap().containsKey('IsPersonAccount');
+Hi Mahesh, quick check on the BKU WB RM permission set.
 
-if (isPersonAccountEnabled) {
-    System.debug('Person Accounts are enabled in this org.');
-} else {
-    System.debug('Person Accounts are NOT enabled.');
-}
+In the other chat, you mentioned to Katherine that you removed Edit access for the Loan Inquiry lookup field on Opportunity and kept it read-only, with no changes to the Loan Inquiry object permissions.
 
+As per the SFWB story, BKU WB RM should have Edit access to the "Loan Inquiry" field on Opportunity. Also, Pankaj's feedback here (Paul should edit fields like Sys Admin) was about the fields on the Loan Inquiry object itself, where Paul still has limited edit access.
 
-SELECT Id, DeveloperName 
-FROM FieldDefinition 
-WHERE EntityDefinitionId = 'Account' AND DeveloperName = 'IsPersonAccount'
+Was making the Opportunity lookup read-only intentional? If not, can we:
+1. Restore Edit on Opportunity → Loan Inquiry field
+2. Give Edit access to all Loan Inquiry object fields in BKU WB RM
+
+Then we can retest with Paul in DEVWB.
