@@ -18,3 +18,7 @@ Manual: open version V1 → Upload CSV File (Decision Matrix 1.csv) → Save. Th
 Manual: Activate version V1.
 If built for AC5: deploy ExpressionSetDefinition [name] and its version, then Activate it in INT.
 Check: the version shows Active with the right row count, and Simulate on the Expression Set returns the outputs.
+
+Object: DocumentType (Setup → Document Checklist → Document Types)
+Records: [X] Document Types loaded in DEVWB
+Fields: MasterLabel, DeveloperName, Description, IsActive
