@@ -29,3 +29,28 @@ Grants the MuleSoft integration user API access to Salesforce files and related 
 ContentDocument, ContentVersion and ContentDocumentLink don’t have object permissions in a permission set, so access to them is given through the Query All Files app permission, which I’ve enabled in BKU_SF_MuleSoft_SharePoint.
 
 Access to the other objects (Document Checklist Item, Relationship, Opportunity, Loan Inquiry and Deal) is given through object permissions, as defined in the story
+
+
+Hi team, please move the following from DEVWB to INT. They’re listed in the order they need to go in.
+
+1. SFWB-90: Document Types (data)
+
+Object: DocumentType
+Records: 191 Document Types loaded in DEVWB
+Fields: MasterLabel, DeveloperName, Description, IsActive
+These need to go in first, because stories 87 and 93 reference the Document Type developer names. If Copado can’t move DocumentType as metadata or with Data Deploy, let me know and I’ll load them manually.
+
+2. SFWB-93: Document Decision Requirement
+
+DecisionTable: Document_Decision_Requirement
+Expression Set: Document_Decision_Requirement
+
+3. SFWB-87: Document Type Settings
+
+Decision Matrix: Document_Type_Settings, with version Document_Type_Settings_V1
+Expression Set: Document_Type_Settings
+
+4. SFWB-101: MuleSoft SharePoint integration
+
+PermissionSet: BKU_SF_MuleSoft_SharePoint
+Dependencies: Loan Inquiry object BKU_Loan_Inquiry__c (SFWB-71) and the four sync fields on Document Checklist Item
