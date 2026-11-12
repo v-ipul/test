@@ -22,3 +22,6 @@ Check: the version shows Active with the right row count, and Simulate on the Ex
 Object: DocumentType (Setup → Document Checklist → Document Types)
 Records: [X] Document Types loaded in DEVWB
 Fields: MasterLabel, DeveloperName, Description, IsActive
+
+
+Grants the MuleSoft integration user API access to Salesforce files and related records (Relationship, Opportunity, Loan Inquiry, Deal), and edit access to Document Checklist Item sync fields for the SharePoint integration.
