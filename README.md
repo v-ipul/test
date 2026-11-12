@@ -25,3 +25,7 @@ Fields: MasterLabel, DeveloperName, Description, IsActive
 
 
 Grants the MuleSoft integration user API access to Salesforce files and related records (Relationship, Opportunity, Loan Inquiry, Deal), and edit access to Document Checklist Item sync fields for the SharePoint integration.
+
+ContentDocument, ContentVersion and ContentDocumentLink don’t have object permissions in a permission set, so access to them is given through the Query All Files app permission, which I’ve enabled in BKU_SF_MuleSoft_SharePoint.
+
+Access to the other objects (Document Checklist Item, Relationship, Opportunity, Loan Inquiry and Deal) is given through object permissions, as defined in the story
