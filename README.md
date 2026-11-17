@@ -54,3 +54,6 @@ Expression Set: Document_Type_Settings
 
 PermissionSet: BKU_SF_MuleSoft_SharePoint
 Dependencies: Loan Inquiry object BKU_Loan_Inquiry__c (SFWB-71) and the four sync fields on Document Checklist Item
+
+
+PersonalOrgSetupStep is a hidden system object. Salesforce sometimes adds it to permission set metadata automatically when the permission set is retrieved, even though nobody granted access to it. MuleSoft doesn’t need it,
