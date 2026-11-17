@@ -1,0 +1,25 @@
+Solution (add to story SFWB-91)
+
+Type: Manual step: data load (not metadata)
+
+Object: DocumentDecisionRequirement
+Source: “File to Load the data” (linked in the story), first tab named DocumentDecisionRequirement
+Records: [X] records
+Tool: Salesforce Inspector (Data Import) or Data Loader
+
+Pre-requisites:
+
+Document Types (SFWB-90) are loaded in the target org.
+The admin running the load has the Document Checklist permission set.
+
+Steps:
+
+Open the file → first tab “DocumentDecisionRequirement” → copy the rows, including the header.
+Salesforce Inspector → Data Import → Action: Insert → Object: DocumentDecisionRequirement → paste the data.
+Check the field mapping → Run Insert → confirm all [X] records succeed.
+Go to Lookup Tables → Document Decision Requirement (SFWB-93) → click Refresh, so the decision table picks up the new records.
+
+Validation:
+
+Run SELECT Id, Name FROM DocumentDecisionRequirement. The count should equal [X].
+The decision table shows Refresh Status Completed.
