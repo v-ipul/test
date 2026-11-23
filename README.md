@@ -128,3 +128,5 @@ Then
 
 Send Juan the difference from step 5 so he can add it to the feature branch.
 Don’t deploy from VS Code yourself unless the team asks you to. Copado and git are the source of truth, and a direct deploy would create the same drift again.
+
+What does "WB access" mean exactly: which permission set or profile? It needs Read and Create on Document Checklist Item.
